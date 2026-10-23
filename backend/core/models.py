@@ -34,6 +34,15 @@ class Trabajadora(models.Model):
 
     observaciones = models.TextField(blank=True)
 
+    usuario = models.OneToOneField(
+    settings.AUTH_USER_MODEL,
+    on_delete=models.SET_NULL,
+    null=True,
+    blank=True,
+    related_name="perfil_trabajadora",
+)
+
+
     def __str__(self):
         return f"{self.nombre} - {self.get_area_display()}"
 
@@ -824,4 +833,86 @@ class ReservaOperacion(models.Model):
             f"{self.trabajadora.nombre} | "
             f"{self.plantilla.operacion.nombre} | "
             f"{self.fecha} | {self.horas_reservadas} h"
+        )
+
+
+
+class RegistroAsistencia(models.Model):
+    """Entrada y salida diaria de una trabajadora."""
+
+    trabajadora = models.ForeignKey(
+        Trabajadora,
+        on_delete=models.PROTECT,
+        related_name="asistencias",
+    )
+    fecha = models.DateField(default=timezone.localdate)
+    entrada = models.DateTimeField(default=timezone.now)
+    salida = models.DateTimeField(null=True, blank=True)
+
+    observaciones_entrada = models.TextField(blank=True)
+    observaciones_salida = models.TextField(blank=True)
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-fecha", "-entrada"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["trabajadora", "fecha"],
+                name="asistencia_unica_persona_fecha",
+            ),
+        ]
+
+    @property
+    def horas_trabajadas(self):
+        if self.salida is None:
+            return None
+
+        segundos = (self.salida - self.entrada).total_seconds()
+        return max(Decimal("0"), Decimal(str(segundos / 3600)))
+
+    def __str__(self):
+        return f"{self.trabajadora.nombre} - {self.fecha}"
+
+
+class SesionTrabajo(models.Model):
+    """Tiempo real dedicado a una reserva de producción."""
+
+    reserva = models.ForeignKey(
+        ReservaOperacion,
+        on_delete=models.PROTECT,
+        related_name="sesiones",
+    )
+    inicio = models.DateTimeField(default=timezone.now)
+    fin = models.DateTimeField(null=True, blank=True)
+
+    observaciones_inicio = models.TextField(blank=True)
+    observaciones_fin = models.TextField(blank=True)
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-inicio"]
+        indexes = [
+            models.Index(
+                fields=["reserva", "inicio"],
+                name="sesion_reserva_inicio_idx",
+            ),
+        ]
+
+    @property
+    def horas_trabajadas(self):
+        final = self.fin or timezone.now()
+        segundos = (final - self.inicio).total_seconds()
+
+        return max(
+            Decimal("0"),
+            Decimal(str(segundos / 3600)),
+        )
+
+    def __str__(self):
+        return (
+            f"{self.reserva.contrato.numero} - "
+            f"{self.reserva.plantilla.operacion.nombre}"
         )

@@ -1,0 +1,1692 @@
+========== core/models.py ==========
+from decimal import Decimal
+
+from django.conf import settings
+from django.core.validators import MinValueValidator
+from django.db import models, transaction
+from django.db.models import Sum
+from django.utils import timezone
+
+
+# ============================================================
+# 1. PERSONAL Y DISPONIBILIDAD
+# ============================================================
+
+class Trabajadora(models.Model):
+    class Area(models.TextChoices):
+        CONFECCION = "CONFECCION", "Confección"
+        BORDADO = "BORDADO", "Bordado"
+        COMPRAS = "COMPRAS", "Compras"
+        PRUEBAS = "PRUEBAS", "Pruebas"
+        LAVANDERIA = "LAVANDERIA", "Lavandería"
+        ACABADOS = "ACABADOS", "Acabados"
+        OTRO = "OTRO", "Otro"
+
+    nombre = models.CharField(max_length=150)
+    area = models.CharField(max_length=20, choices=Area.choices)
+    activa = models.BooleanField(default=True)
+
+    # Una persona puede tener varias habilidades.
+    habilidades = models.ManyToManyField(
+        "Operacion",
+        blank=True,
+        related_name="trabajadoras_habilitadas",
+    )
+
+    observaciones = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.nombre} - {self.get_area_display()}"
+
+
+class DisponibilidadSemanal(models.Model):
+    DIAS = [
+        (0, "Lunes"),
+        (1, "Martes"),
+        (2, "Miércoles"),
+        (3, "Jueves"),
+        (4, "Viernes"),
+        (5, "Sábado"),
+        (6, "Domingo"),
+    ]
+
+    trabajadora = models.ForeignKey(
+        Trabajadora,
+        on_delete=models.CASCADE,
+        related_name="horarios",
+    )
+    dia_semana = models.PositiveSmallIntegerField(choices=DIAS)
+    horas_disponibles = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["trabajadora", "dia_semana"],
+                name="horario_unico_por_trabajadora_dia",
+            )
+        ]
+        ordering = ["dia_semana"]
+
+    def __str__(self):
+        return (
+            f"{self.trabajadora.nombre} - "
+            f"{self.get_dia_semana_display()}: "
+            f"{self.horas_disponibles} h"
+        )
+
+
+class AusenciaTrabajadora(models.Model):
+    trabajadora = models.ForeignKey(
+        Trabajadora,
+        on_delete=models.CASCADE,
+        related_name="ausencias",
+    )
+    fecha_inicio = models.DateField()
+    fecha_fin = models.DateField()
+    horas_no_disponibles = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    motivo = models.CharField(max_length=200, blank=True)
+
+    def __str__(self):
+        return f"{self.trabajadora} - {self.fecha_inicio}"
+
+
+# ============================================================
+# 2. CATÁLOGO DE VESTIDOS Y OPERACIONES
+# ============================================================
+
+class TipoVestido(models.Model):
+    nombre = models.CharField(max_length=100, unique=True)
+    activo = models.BooleanField(default=True)
+    descripcion = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.nombre
+
+
+class Operacion(models.Model):
+    nombre = models.CharField(max_length=120, unique=True)
+    area_responsable = models.CharField(
+        max_length=20,
+        choices=Trabajadora.Area.choices,
+        default=Trabajadora.Area.OTRO,
+    )
+    descripcion = models.TextField(blank=True)
+    activa = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nombre
+
+
+class RutaProduccion(models.Model):
+    class Tipo(models.TextChoices):
+        TALLER_A = "A", "Taller A - Confección desde cero"
+        TALLER_C = "C", "Taller C - Compra y modificación"
+
+    tipo_vestido = models.ForeignKey(
+        TipoVestido,
+        on_delete=models.PROTECT,
+        related_name="rutas",
+    )
+    taller = models.CharField(max_length=1, choices=Tipo.choices)
+    activa = models.BooleanField(default=True)
+    descripcion = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tipo_vestido", "taller"],
+                name="ruta_unica_por_tipo_y_taller",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.tipo_vestido} - Taller {self.taller}"
+
+
+class PlantillaOperacion(models.Model):
+    """
+    Define cada etapa y sus tiempos editables para un vestido y ruta.
+
+    TRABAJO: consume horas de una persona o recurso.
+    ESPERA: transcurre tiempo, pero no consume horas de personal.
+    """
+
+    class TipoTiempo(models.TextChoices):
+        TRABAJO = "TRABAJO", "Trabajo efectivo"
+        ESPERA = "ESPERA", "Espera o plazo de proveedor"
+
+    ruta = models.ForeignKey(
+        RutaProduccion,
+        on_delete=models.CASCADE,
+        related_name="operaciones",
+    )
+    operacion = models.ForeignKey(
+        Operacion,
+        on_delete=models.PROTECT,
+        related_name="plantillas",
+    )
+    orden = models.PositiveIntegerField(default=1)
+
+    tipo_tiempo = models.CharField(
+        max_length=10,
+        choices=TipoTiempo.choices,
+        default=TipoTiempo.TRABAJO,
+    )
+
+    # Cada proceso tiene su propio tiempo, modificable.
+    horas_estimadas = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    obligatoria = models.BooleanField(default=True)
+    activa = models.BooleanField(default=True)
+
+    # Permite indicar que una etapa debe esperar a otra.
+    depende_de = models.ManyToManyField(
+        "self",
+        symmetrical=False,
+        blank=True,
+        related_name="operaciones_siguientes",
+    )
+
+    observaciones = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["orden", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ruta", "operacion"],
+                name="operacion_unica_por_ruta",
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.ruta} - {self.operacion}: "
+            f"{self.horas_estimadas} h"
+        )
+
+
+# ============================================================
+# 3. CLIENTES Y SIMULACIONES
+# ============================================================
+
+class Cliente(models.Model):
+    nombre = models.CharField(max_length=180)
+    documento = models.CharField(max_length=30, blank=True)
+    telefono = models.CharField(max_length=30, blank=True)
+    correo = models.EmailField(blank=True)
+    activo = models.BooleanField(default=True)
+    observaciones = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.nombre
+
+
+class SimulacionContrato(models.Model):
+    class Estado(models.TextChoices):
+        BORRADOR = "BORRADOR", "Borrador"
+        VIABLE = "VIABLE", "Viable"
+        NO_VIABLE = "NO_VIABLE", "No viable"
+        ACEPTADA = "ACEPTADA", "Convertida en contrato"
+        DESCARTADA = "DESCARTADA", "Descartada"
+
+    cliente = models.ForeignKey(
+        Cliente,
+        on_delete=models.PROTECT,
+        related_name="simulaciones",
+    )
+    tipo_vestido = models.ForeignKey(
+        TipoVestido,
+        on_delete=models.PROTECT,
+    )
+    ruta = models.ForeignKey(
+        RutaProduccion,
+        on_delete=models.PROTECT,
+    )
+
+    cantidad = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    fecha_simulacion = models.DateTimeField(default=timezone.now)
+    fecha_entrega_solicitada = models.DateField()
+
+    precio_unitario = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    estado = models.CharField(
+        max_length=12,
+        choices=Estado.choices,
+        default=Estado.BORRADOR,
+    )
+
+    horas_trabajo_estimadas = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    horas_espera_estimadas = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+
+    fecha_entrega_estimada = models.DateField(null=True, blank=True)
+    resultado_detallado = models.JSONField(default=dict, blank=True)
+    observaciones = models.TextField(blank=True)
+
+    creada_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="simulaciones_creadas",
+    )
+
+    @property
+    def importe_total(self):
+        return self.precio_unitario * self.cantidad
+
+    def __str__(self):
+        return f"Simulación #{self.pk} - {self.cliente}"
+
+
+class DetalleSimulacion(models.Model):
+    """
+    Copia los tiempos empleados en una simulación.
+    Los cambios futuros en las plantillas no alteran el historial.
+    """
+
+    simulacion = models.ForeignKey(
+        SimulacionContrato,
+        on_delete=models.CASCADE,
+        related_name="detalles",
+    )
+    operacion_nombre = models.CharField(max_length=120)
+    orden = models.PositiveIntegerField()
+    tipo_tiempo = models.CharField(
+        max_length=10,
+        choices=PlantillaOperacion.TipoTiempo.choices,
+    )
+    horas_por_unidad = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+    )
+    cantidad = models.PositiveIntegerField(default=1)
+    horas_totales = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+    observaciones = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["orden", "id"]
+
+
+# ============================================================
+# 4. CONTRATOS
+# ============================================================
+
+class Contrato(models.Model):
+    class Estado(models.TextChoices):
+        ACTIVO = "ACTIVO", "Activo"
+        EN_PRODUCCION = "EN_PRODUCCION", "En producción"
+        ENTREGADO = "ENTREGADO", "Entregado"
+        CANCELADO = "CANCELADO", "Cancelado"
+
+    simulacion = models.OneToOneField(
+        SimulacionContrato,
+        on_delete=models.PROTECT,
+        related_name="contrato",
+    )
+    numero = models.CharField(max_length=40, unique=True)
+    fecha_firma = models.DateField(default=timezone.localdate)
+    fecha_entrega = models.DateField()
+    precio_total = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    estado = models.CharField(
+        max_length=15,
+        choices=Estado.choices,
+        default=Estado.ACTIVO,
+    )
+    condiciones_pago = models.TextField(blank=True)
+    observaciones = models.TextField(blank=True)
+
+    @property
+    def total_pagado(self):
+        return self.pagos.filter(confirmado=True).aggregate(
+            total=Sum("importe")
+        )["total"] or Decimal("0.00")
+
+    @property
+    def saldo_pendiente(self):
+        return self.precio_total - self.total_pagado
+
+    def __str__(self):
+        return self.numero
+
+
+# ============================================================
+# 5. FINANZAS
+# ============================================================
+
+class CategoriaFinanciera(models.Model):
+    class Tipo(models.TextChoices):
+        INGRESO = "INGRESO", "Ingreso"
+        EGRESO = "EGRESO", "Egreso"
+
+    nombre = models.CharField(max_length=100, unique=True)
+    tipo = models.CharField(max_length=10, choices=Tipo.choices)
+    activa = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.nombre} ({self.tipo})"
+
+
+class Pago(models.Model):
+    class Metodo(models.TextChoices):
+        EFECTIVO = "EFECTIVO", "Efectivo"
+        TRANSFERENCIA = "TRANSFERENCIA", "Transferencia"
+        TARJETA = "TARJETA", "Tarjeta"
+        OTRO = "OTRO", "Otro"
+
+    contrato = models.ForeignKey(
+        Contrato,
+        on_delete=models.PROTECT,
+        related_name="pagos",
+    )
+    fecha = models.DateField(default=timezone.localdate)
+    importe = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    metodo = models.CharField(max_length=20, choices=Metodo.choices)
+    concepto = models.CharField(max_length=150, default="Pago de contrato")
+    confirmado = models.BooleanField(default=False)
+    referencia = models.CharField(max_length=100, blank=True)
+    registrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    def save(self, *args, **kwargs):
+        """
+        Al confirmar un pago, crea o actualiza su movimiento financiero.
+        Si no está confirmado, no se contabiliza como ingreso.
+        """
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+
+            if self.confirmado:
+                categoria, _ = CategoriaFinanciera.objects.get_or_create(
+                    nombre="Pagos de contratos",
+                    defaults={
+                        "tipo": CategoriaFinanciera.Tipo.INGRESO
+                    },
+                )
+
+                MovimientoFinanciero.objects.update_or_create(
+                    pago=self,
+                    defaults={
+                        "fecha": self.fecha,
+                        "tipo": MovimientoFinanciero.Tipo.INGRESO,
+                        "categoria": categoria,
+                        "importe": self.importe,
+                        "descripcion": (
+                            f"{self.concepto} - Contrato "
+                            f"{self.contrato.numero}"
+                        ),
+                    },
+                )
+            else:
+                MovimientoFinanciero.objects.filter(
+                    pago=self
+                ).delete()
+
+    def __str__(self):
+        return f"Pago de {self.importe} - {self.contrato.numero}"
+
+
+class MovimientoFinanciero(models.Model):
+    class Tipo(models.TextChoices):
+        INGRESO = "INGRESO", "Ingreso"
+        EGRESO = "EGRESO", "Egreso"
+
+    fecha = models.DateField(default=timezone.localdate)
+    tipo = models.CharField(max_length=10, choices=Tipo.choices)
+    categoria = models.ForeignKey(
+        CategoriaFinanciera,
+        on_delete=models.PROTECT,
+        related_name="movimientos",
+    )
+    importe = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    descripcion = models.CharField(max_length=250)
+
+    # Un pago confirmado genera un único movimiento asociado.
+    pago = models.OneToOneField(
+        Pago,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="movimiento_financiero",
+    )
+
+    contrato = models.ForeignKey(
+        Contrato,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="movimientos_financieros",
+    )
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-fecha", "-id"]
+
+    def __str__(self):
+        return f"{self.tipo}: {self.importe} - {self.fecha}"
+
+
+class CostoOperativo(models.Model):
+    """
+    Para registrar gastos fijos y variables del taller.
+    Ejemplos: planilla, alquiler, servicios y materiales.
+    """
+
+    class Frecuencia(models.TextChoices):
+        UNICO = "UNICO", "Único"
+        SEMANAL = "SEMANAL", "Semanal"
+        MENSUAL = "MENSUAL", "Mensual"
+        ANUAL = "ANUAL", "Anual"
+
+    nombre = models.CharField(max_length=150)
+    categoria = models.ForeignKey(
+        CategoriaFinanciera,
+        on_delete=models.PROTECT,
+    )
+    importe = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    frecuencia = models.CharField(
+        max_length=10,
+        choices=Frecuencia.choices,
+        default=Frecuencia.MENSUAL,
+    )
+    fecha_inicio = models.DateField(default=timezone.localdate)
+    fecha_fin = models.DateField(null=True, blank=True)
+    activo = models.BooleanField(default=True)
+    observaciones = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.nombre
+
+
+# ============================================================
+# 6. DATOS INICIALES DEL EXCEL
+# ============================================================
+
+# None significa que el proceso no aplica a esa ruta.
+# Los tiempos están expresados en horas aproximadas.
+# En Taller A, compra materiales = trabajo de personal.
+# En Taller C, compra materiales = espera del proveedor.
+
+DATOS_TIEMPOS = {
+    "Minimalista": {
+        "compra materiales": (168, 1140),
+        "patronaje": (10, None),
+        "corte de tela": (14, None),
+        "confección": (14, None),
+        "prueba 1": (2, 2),
+        "entalle": (24, 12),
+        "prueba 2": (2, 2),
+        "acabados": (8, 8),
+        "basta": (4, 4),
+        "bordado": (8, 0),
+        "lavandería": (24, 24),
+        "prueba 3": (2, 2),
+    },
+    "Sirena": {
+        "compra materiales": (168, 1140),
+        "patronaje": (10, None),
+        "corte de tela": (24, None),
+        "confección": (14, None),
+        "prueba 1": (2, 2),
+        "entalle": (16, 16),
+        "prueba 2": (2, 2),
+        "acabados": (24, 24),
+        "basta": (4, 4),
+        "bordado": (160, 160),
+        "lavandería": (24, 24),
+        "prueba 3": (2, 2),
+    },
+    "Corte A": {
+        "compra materiales": (168, 1140),
+        "patronaje": (10, None),
+        "corte de tela": (24, None),
+        "confección": (14, None),
+        "prueba 1": (2, 2),
+        "entalle": (8, 8),
+        "prueba 2": (2, 2),
+        "acabados": (16, 16),
+        "basta": (6, 6),
+        "bordado": (48, 48),
+        "lavandería": (24, 24),
+        "prueba 3": (2, 2),
+    },
+    "Princesa": {
+        "compra materiales": (168, 1140),
+        "patronaje": (10, None),
+        "corte de tela": (24, None),
+        "confección": (14, None),
+        "prueba 1": (2, 2),
+        "entalle": (12, 8),
+        "prueba 2": (2, 2),
+        "acabados": (22, 8),
+        "basta": (8, 8),
+        "bordado": (120, 85),
+        "lavandería": (24, 24),
+        "prueba 3": (2, 2),
+    },
+    "Mini Me": {
+        "compra materiales": (168, 1140),
+        "patronaje": (8, None),
+        "corte de tela": (8, None),
+        "confección": (18, None),
+        "prueba 1": (2, 2),
+        "entalle": (8, 8),
+        "prueba 2": (2, 2),
+        "acabados": (8, 8),
+        "basta": (4, 4),
+        "bordado": (24, 12),
+        "lavandería": (24, 24),
+        "prueba 3": (2, 2),
+    },
+    "Vainal": {
+        "compra materiales": (168, 1140),
+        "patronaje": (10, None),
+        "corte de tela": (24, None),
+        "confección": (14, None),
+        "prueba 1": (2, 2),
+        "entalle": (8, 8),
+        "prueba 2": (2, 2),
+        "acabados": (16, 16),
+        "basta": (6, 6),
+        "bordado": (48, 48),
+        "lavandería": (24, 24),
+        "prueba 3": (2, 2),
+    },
+    "Desmontable": {
+        "compra materiales": (168, 1140),
+        "patronaje": (4, None),
+        "corte de tela": (4, None),
+        "confección": (8, None),
+        "prueba 1": (1, 1),
+        "entalle": (4, 4),
+        "prueba 2": (1, 1),
+        "acabados": (4, 4),
+        "basta": (4, 4),
+        "bordado": (48, 4),
+        "lavandería": (12, 12),
+        "prueba 3": (1, 1),
+    },
+}
+
+
+def cargar_catalogo_inicial():
+    """
+    Ejecutar una vez desde Django shell.
+    Crea los vestidos, las operaciones, las dos rutas y sus tiempos.
+
+    No sobrescribe las horas que ya hayas modificado posteriormente.
+    """
+    with transaction.atomic():
+        for nombre_vestido, procesos in DATOS_TIEMPOS.items():
+            vestido, _ = TipoVestido.objects.get_or_create(
+                nombre=nombre_vestido
+            )
+
+            for taller in ["A", "C"]:
+                ruta, _ = RutaProduccion.objects.get_or_create(
+                    tipo_vestido=vestido,
+                    taller=taller,
+                )
+
+                for orden, (nombre, tiempos) in enumerate(
+                    procesos.items(), start=1
+                ):
+                    horas = tiempos[0] if taller == "A" else tiempos[1]
+
+                    # En el Excel, una celda vacía significa que
+                    # la operación no corresponde a esa ruta.
+                    if horas is None:
+                        continue
+
+                    nombre_normalizado = nombre.strip().lower()
+
+                    area = Trabajadora.Area.OTRO
+                    if nombre_normalizado == "compra materiales":
+                        area = Trabajadora.Area.COMPRAS
+                    elif nombre_normalizado in (
+                        "patronaje", "corte de tela", "confección", "entalle"
+                    ):
+                        area = Trabajadora.Area.CONFECCION
+                    elif nombre_normalizado == "bordado":
+                        area = Trabajadora.Area.BORDADO
+                    elif nombre_normalizado.startswith("prueba"):
+                        area = Trabajadora.Area.PRUEBAS
+                    elif nombre_normalizado == "lavandería":
+                        area = Trabajadora.Area.LAVANDERIA
+                    elif nombre_normalizado in ("acabados", "basta"):
+                        area = Trabajadora.Area.ACABADOS
+
+                    operacion, _ = Operacion.objects.get_or_create(
+                        nombre=nombre,
+                        defaults={"area_responsable": area},
+                    )
+
+                    tipo_tiempo = (
+                        PlantillaOperacion.TipoTiempo.ESPERA
+                        if taller == "C"
+                        and nombre_normalizado == "compra materiales"
+                        else PlantillaOperacion.TipoTiempo.TRABAJO
+                    )
+
+                    plantilla, creada = (
+                        PlantillaOperacion.objects.get_or_create(
+                            ruta=ruta,
+                            operacion=operacion,
+                            defaults={
+                                "orden": orden,
+                                "horas_estimadas": Decimal(str(horas)),
+                                "tipo_tiempo": tipo_tiempo,
+                                "activa": True,
+                            },
+                        )
+                    )
+
+                    # Si la plantilla ya existe, no se reemplaza
+                    # su tiempo editable.
+                    if creada:
+                        plantilla.save()
+
+
+class ReservaOperacion(models.Model):
+    """
+    Registra las horas de producción comprometidas por trabajadora,
+    operación, fecha y contrato.
+    """
+
+    class Estado(models.TextChoices):
+        RESERVADA = "RESERVADA", "Reservada"
+        EN_PROCESO = "EN_PROCESO", "En proceso"
+        COMPLETADA = "COMPLETADA", "Completada"
+        CANCELADA = "CANCELADA", "Cancelada"
+
+    contrato = models.ForeignKey(
+        "Contrato",
+        on_delete=models.PROTECT,
+        related_name="reservas_produccion",
+    )
+    trabajadora = models.ForeignKey(
+        "Trabajadora",
+        on_delete=models.PROTECT,
+        related_name="reservas_produccion",
+    )
+    plantilla = models.ForeignKey(
+        "PlantillaOperacion",
+        on_delete=models.PROTECT,
+        related_name="reservas_produccion",
+    )
+    fecha = models.DateField()
+
+    horas_reservadas = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    horas_realizadas = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    estado = models.CharField(
+        max_length=12,
+        choices=Estado.choices,
+        default=Estado.RESERVADA,
+    )
+    observaciones = models.TextField(blank=True)
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["fecha", "trabajadora", "plantilla"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "contrato",
+                    "trabajadora",
+                    "plantilla",
+                    "fecha",
+                ],
+                name="reserva_unica_por_contrato_persona_operacion_dia",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["trabajadora", "fecha", "estado"],
+                name="res_persona_fecha_estado_idx",
+            ),
+            models.Index(
+                fields=["contrato", "estado"],
+                name="reserva_contrato_estado_idx",
+            ),
+        ]
+
+    @property
+    def horas_pendientes(self):
+        return max(
+            Decimal("0"),
+            self.horas_reservadas - self.horas_realizadas,
+        )
+
+    def __str__(self):
+        return (
+            f"{self.contrato.numero} | "
+            f"{self.trabajadora.nombre} | "
+            f"{self.plantilla.operacion.nombre} | "
+            f"{self.fecha} | {self.horas_reservadas} h"
+        )
+
+========== core/personal/serializers.py ==========
+
+from decimal import Decimal
+
+from rest_framework import serializers
+
+from core.models import (
+    Trabajadora,
+    Operacion,
+    DisponibilidadSemanal,
+    AusenciaTrabajadora,
+    ReservaOperacion,
+)
+
+
+class OperacionSerializer(serializers.ModelSerializer):
+    area_nombre = serializers.CharField(
+        source="get_area_responsable_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = Operacion
+        fields = [
+            "id",
+            "nombre",
+            "area_responsable",
+            "area_nombre",
+            "descripcion",
+            "activa",
+        ]
+        read_only_fields = fields
+
+
+class DisponibilidadSerializer(serializers.ModelSerializer):
+    dia_nombre = serializers.CharField(
+        source="get_dia_semana_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = DisponibilidadSemanal
+        fields = [
+            "id",
+            "dia_semana",
+            "dia_nombre",
+            "horas_disponibles",
+        ]
+
+    def validate_horas_disponibles(self, value):
+        if value < 0 or value > 24:
+            raise serializers.ValidationError(
+                "Las horas deben estar entre 0 y 24."
+            )
+        return value
+
+
+class AusenciaSerializer(serializers.ModelSerializer):
+    trabajadora_nombre = serializers.CharField(
+        source="trabajadora.nombre",
+        read_only=True,
+    )
+
+    class Meta:
+        model = AusenciaTrabajadora
+        fields = [
+            "id",
+            "trabajadora",
+            "trabajadora_nombre",
+            "fecha_inicio",
+            "fecha_fin",
+            "horas_no_disponibles",
+            "motivo",
+        ]
+
+    def validate(self, attrs):
+        inicio = attrs.get(
+            "fecha_inicio",
+            getattr(self.instance, "fecha_inicio", None),
+        )
+        fin = attrs.get(
+            "fecha_fin",
+            getattr(self.instance, "fecha_fin", None),
+        )
+        horas = attrs.get(
+            "horas_no_disponibles",
+            getattr(self.instance, "horas_no_disponibles", Decimal("0")),
+        )
+
+        if inicio and fin and fin < inicio:
+            raise serializers.ValidationError({
+                "fecha_fin": "No puede ser anterior al inicio."
+            })
+
+        # Interpretamos estas horas como descuento por día.
+        if horas < 0 or horas > 24:
+            raise serializers.ValidationError({
+                "horas_no_disponibles": "Debe estar entre 0 y 24."
+            })
+
+        return attrs
+
+
+class TrabajadoraSerializer(serializers.ModelSerializer):
+    habilidades = serializers.PrimaryKeyRelatedField(
+        queryset=Operacion.objects.filter(activa=True),
+        many=True,
+        required=False,
+    )
+
+    area_nombre = serializers.CharField(
+        source="get_area_display",
+        read_only=True,
+    )
+
+    habilidades_detalle = OperacionSerializer(
+        source="habilidades",
+        many=True,
+        read_only=True,
+    )
+
+    horarios = DisponibilidadSerializer(
+        many=True,
+        read_only=True,
+    )
+
+    class Meta:
+        model = Trabajadora
+        fields = [
+            "id",
+            "nombre",
+            "area",
+            "area_nombre",
+            "activa",
+            "observaciones",
+            "habilidades",
+            "habilidades_detalle",
+            "horarios",
+        ]
+
+    def validate_nombre(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError(
+                "El nombre es obligatorio."
+            )
+        return value
+
+
+class ReservaPersonalSerializer(serializers.ModelSerializer):
+    contrato_numero = serializers.CharField(
+        source="contrato.numero",
+        read_only=True,
+    )
+    operacion_nombre = serializers.CharField(
+        source="plantilla.operacion.nombre",
+        read_only=True,
+    )
+    horas_pendientes = serializers.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    class Meta:
+        model = ReservaOperacion
+        fields = [
+            "id",
+            "contrato",
+            "contrato_numero",
+            "plantilla",
+            "operacion_nombre",
+            "fecha",
+            "horas_reservadas",
+            "horas_realizadas",
+            "horas_pendientes",
+            "estado",
+            "observaciones",
+        ]
+        read_only_fields = fields
+
+
+class HorarioDiaEntradaSerializer(serializers.Serializer):
+    dia_semana = serializers.IntegerField(
+        min_value=0,
+        max_value=6,
+    )
+    horas_disponibles = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        min_value=Decimal("0"),
+        max_value=Decimal("24"),
+    )
+
+
+class HorarioSemanalEntradaSerializer(serializers.Serializer):
+    horarios = HorarioDiaEntradaSerializer(many=True)
+
+    def validate_horarios(self, value):
+        dias = [item["dia_semana"] for item in value]
+
+        if len(dias) != 7 or set(dias) != set(range(7)):
+            raise serializers.ValidationError(
+                "Debes enviar los siete días, del 0 al 6, "
+                "sin repetir ninguno."
+            )
+
+        return value
+
+========== core/personal/views.py ==========
+
+from datetime import timedelta
+from decimal import Decimal
+
+from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
+
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.response import Response
+
+from core.models import (
+    Trabajadora,
+    Operacion,
+    DisponibilidadSemanal,
+    AusenciaTrabajadora,
+    ReservaOperacion,
+)
+
+from .serializers import (
+    TrabajadoraSerializer,
+    OperacionSerializer,
+    DisponibilidadSerializer,
+    AusenciaSerializer,
+    ReservaPersonalSerializer,
+    HorarioSemanalEntradaSerializer,
+)
+
+
+class EsGerencia(BasePermission):
+    """
+    Acceso exclusivo para superusuarios o miembros
+    del grupo Gerencia de Django.
+    """
+
+    message = "No tienes permisos de Gerencia."
+
+    def has_permission(self, request, view):
+        usuario = request.user
+
+        return bool(
+            usuario
+            and usuario.is_authenticated
+            and (
+                usuario.is_superuser
+                or usuario.groups.filter(
+                    name="Gerencia"
+                ).exists()
+            )
+        )
+
+
+class TrabajadoraViewSet(viewsets.ModelViewSet):
+    """
+    CRUD de personal:
+    GET, POST, PATCH, PUT y DELETE.
+
+    DELETE está deshabilitado para conservar
+    el historial del taller.
+    """
+
+    serializer_class = TrabajadoraSerializer
+    permission_classes = [IsAuthenticated, EsGerencia]
+
+    queryset = Trabajadora.objects.prefetch_related(
+        "habilidades",
+        "horarios",
+    ).all().order_by("nombre", "id")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        nombre = self.request.query_params.get("buscar")
+        area = self.request.query_params.get("area")
+        activa = self.request.query_params.get("activa")
+
+        if nombre:
+            queryset = queryset.filter(
+                nombre__icontains=nombre.strip()
+            )
+
+        if area:
+            queryset = queryset.filter(area=area)
+
+        if activa is not None:
+            if activa.lower() == "true":
+                queryset = queryset.filter(activa=True)
+            elif activa.lower() == "false":
+                queryset = queryset.filter(activa=False)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        """
+        Al registrar personal, crea sus siete días
+        de disponibilidad con cero horas.
+        Gerencia podrá configurarlos después.
+        """
+        with transaction.atomic():
+            trabajadora = serializer.save()
+
+            DisponibilidadSemanal.objects.bulk_create([
+                DisponibilidadSemanal(
+                    trabajadora=trabajadora,
+                    dia_semana=dia,
+                    horas_disponibles=Decimal("0"),
+                )
+                for dia in range(7)
+            ])
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detalle": (
+                    "No se permite eliminar personal. "
+                    "Cambia su estado a inactivo."
+                )
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    @action(detail=False, methods=["get"])
+    def opciones(self, request):
+        """
+        Opciones para los selectores del frontend.
+        """
+        operaciones = Operacion.objects.filter(
+            activa=True
+        ).order_by("area_responsable", "nombre")
+
+        return Response({
+            "areas": [
+                {"valor": valor, "nombre": nombre}
+                for valor, nombre in Trabajadora.Area.choices
+            ],
+            "dias": [
+                {"valor": valor, "nombre": nombre}
+                for valor, nombre in DisponibilidadSemanal.DIAS
+            ],
+            "operaciones": OperacionSerializer(
+                operaciones,
+                many=True,
+            ).data,
+        })
+
+    @action(
+        detail=True,
+        methods=["get", "put"],
+        url_path="horarios",
+    )
+    def horarios(self, request, pk=None):
+        trabajadora = self.get_object()
+
+        if request.method == "GET":
+            horarios = trabajadora.horarios.all()
+
+            return Response({
+                "trabajadora": trabajadora.id,
+                "nombre": trabajadora.nombre,
+                "horarios": DisponibilidadSerializer(
+                    horarios,
+                    many=True,
+                ).data,
+            })
+
+        serializer = HorarioSemanalEntradaSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            for item in serializer.validated_data["horarios"]:
+                DisponibilidadSemanal.objects.update_or_create(
+                    trabajadora=trabajadora,
+                    dia_semana=item["dia_semana"],
+                    defaults={
+                        "horas_disponibles":
+                            item["horas_disponibles"]
+                    },
+                )
+
+        horarios = trabajadora.horarios.all()
+
+        return Response({
+            "mensaje": "Horario actualizado correctamente.",
+            "horarios": DisponibilidadSerializer(
+                horarios,
+                many=True,
+            ).data,
+        })
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="ausencias",
+    )
+    def ausencias(self, request, pk=None):
+        trabajadora = self.get_object()
+
+        ausencias = trabajadora.ausencias.all().order_by(
+            "-fecha_inicio", "-id"
+        )
+
+        return Response(
+            AusenciaSerializer(ausencias, many=True).data
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="reservas",
+    )
+    def reservas(self, request, pk=None):
+        trabajadora = self.get_object()
+
+        reservas = ReservaOperacion.objects.filter(
+            trabajadora=trabajadora
+        ).select_related(
+            "contrato",
+            "plantilla__operacion",
+        ).order_by("fecha", "id")
+
+        return Response(
+            ReservaPersonalSerializer(
+                reservas,
+                many=True,
+            ).data
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="capacidad",
+    )
+    def capacidad(self, request, pk=None):
+        """
+        Resumen de una semana.
+
+        Parámetro opcional:
+        ?fecha=2026-10-26
+
+        La semana se calcula de lunes a domingo.
+
+        horas_no_disponibles se interpreta como
+        descuento diario en cada fecha de ausencia.
+
+        Las reservas COMPLETADAS se cuentan por sus
+        horas reservadas para mostrar ocupación
+        planificada, no solamente trabajo pendiente.
+        """
+        trabajadora = self.get_object()
+
+        fecha_texto = request.query_params.get("fecha")
+
+        if fecha_texto:
+            try:
+                from datetime import date
+                fecha = date.fromisoformat(fecha_texto)
+            except ValueError:
+                return Response(
+                    {"fecha": "Usa el formato AAAA-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            fecha = timezone.localdate()
+
+        lunes = fecha - timedelta(days=fecha.weekday())
+        domingo = lunes + timedelta(days=6)
+
+        horarios = {
+            horario.dia_semana: horario.horas_disponibles
+            for horario in trabajadora.horarios.all()
+        }
+
+        ausencias = AusenciaTrabajadora.objects.filter(
+            trabajadora=trabajadora,
+            fecha_inicio__lte=domingo,
+            fecha_fin__gte=lunes,
+        )
+
+        reservas = ReservaOperacion.objects.filter(
+            trabajadora=trabajadora,
+            fecha__range=(lunes, domingo),
+        ).exclude(
+            estado=ReservaOperacion.Estado.CANCELADA
+        )
+
+        reservas_por_fecha = {}
+
+        for reserva in reservas:
+            reservas_por_fecha.setdefault(
+                reserva.fecha, Decimal("0")
+            )
+            reservas_por_fecha[reserva.fecha] += (
+                reserva.horas_reservadas
+            )
+
+        detalle = []
+        total_capacidad = Decimal("0")
+        total_reservado = Decimal("0")
+        total_libre = Decimal("0")
+
+        for numero_dia in range(7):
+            dia = lunes + timedelta(days=numero_dia)
+
+            horas_base = (
+                horarios.get(numero_dia, Decimal("0"))
+                if trabajadora.activa
+                else Decimal("0")
+            )
+
+            descuento = sum(
+                (
+                    ausencia.horas_no_disponibles
+                    for ausencia in ausencias
+                    if ausencia.fecha_inicio <= dia
+                    <= ausencia.fecha_fin
+                ),
+                Decimal("0"),
+            )
+
+            capacidad = max(
+                Decimal("0"),
+                horas_base - descuento,
+            )
+
+            reservado = reservas_por_fecha.get(
+                dia, Decimal("0")
+            )
+
+            libre = max(
+                Decimal("0"),
+                capacidad - reservado,
+            )
+
+            total_capacidad += capacidad
+            total_reservado += reservado
+            total_libre += libre
+
+            detalle.append({
+                "fecha": dia.isoformat(),
+                "dia_semana": numero_dia,
+                "horas_base": horas_base,
+                "horas_ausencia": descuento,
+                "horas_disponibles": capacidad,
+                "horas_reservadas": reservado,
+                "horas_libres": libre,
+                "sobrecarga": max(
+                    Decimal("0"),
+                    reservado - capacidad,
+                ),
+            })
+
+        ocupacion = (
+            (total_reservado / total_capacidad * 100)
+            if total_capacidad > 0
+            else Decimal("0")
+        )
+
+        return Response({
+            "trabajadora": trabajadora.id,
+            "nombre": trabajadora.nombre,
+            "activa": trabajadora.activa,
+            "semana_inicio": lunes.isoformat(),
+            "semana_fin": domingo.isoformat(),
+            "horas_disponibles": total_capacidad,
+            "horas_reservadas": total_reservado,
+            "horas_libres": total_libre,
+            "ocupacion_porcentaje": round(ocupacion, 2),
+            "detalle": detalle,
+        })
+
+
+class AusenciaViewSet(viewsets.ModelViewSet):
+    """
+    Registrar, consultar, editar y eliminar ausencias.
+    """
+
+    serializer_class = AusenciaSerializer
+    permission_classes = [IsAuthenticated, EsGerencia]
+
+    queryset = AusenciaTrabajadora.objects.select_related(
+        "trabajadora"
+    ).all().order_by("-fecha_inicio", "-id")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        trabajadora = self.request.query_params.get(
+            "trabajadora"
+        )
+
+        if trabajadora:
+            queryset = queryset.filter(
+                trabajadora_id=trabajadora
+            )
+
+        return queryset
+
+
+class OperacionViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Consulta de operaciones para los selectores
+    de habilidades del personal.
+    """
+
+    serializer_class = OperacionSerializer
+    permission_classes = [IsAuthenticated, EsGerencia]
+
+    queryset = Operacion.objects.all().order_by(
+        "area_responsable", "nombre"
+    )
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        area = self.request.query_params.get("area")
+        activa = self.request.query_params.get("activa")
+
+        if area:
+            queryset = queryset.filter(
+                area_responsable=area
+            )
+
+        if activa is not None:
+            if activa.lower() == "true":
+                queryset = queryset.filter(activa=True)
+            elif activa.lower() == "false":
+                queryset = queryset.filter(activa=False)
+
+        return queryset
+
+========== core/personal/urls.py ==========
+
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from .views import (
+    TrabajadoraViewSet,
+    AusenciaViewSet,
+    OperacionViewSet,
+)
+
+router = DefaultRouter()
+
+router.register(
+    r"trabajadoras",
+    TrabajadoraViewSet,
+    basename="personal-trabajadoras",
+)
+
+router.register(
+    r"ausencias",
+    AusenciaViewSet,
+    basename="personal-ausencias",
+)
+
+router.register(
+    r"operaciones",
+    OperacionViewSet,
+    basename="personal-operaciones",
+)
+
+urlpatterns = [
+    path("", include(router.urls)),
+]
+
+========== core/urls.py ==========
+
+from django.urls import path
+
+from .views import (
+    CapacidadProduccionView,
+    CatalogoSimuladorView,
+)
+
+urlpatterns = [
+    path(
+        "catalogo/",
+        CatalogoSimuladorView.as_view(),
+        name="catalogo-simulador",
+    ),
+    path(
+        "capacidad/",
+        CapacidadProduccionView.as_view(),
+        name="capacidad-produccion",
+    ),
+]
+
+========== config/urls.py ==========
+
+from django.contrib import admin
+from django.urls import include, path
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularSwaggerView,
+)
+
+urlpatterns = [
+    path("admin/", admin.site.urls),
+
+    # Autenticación
+    path("api/auth/", include("accounts.urls")),
+
+    # Módulo principal
+    path("api/core/", include("core.urls")),
+
+    # Módulo Personal - Gerencia
+    path(
+        "api/gerencia/personal/",
+        include("core.personal.urls"),
+    ),
+
+    # Documentación de la API
+    path(
+        "api/schema/",
+        SpectacularAPIView.as_view(),
+        name="schema",
+    ),
+    path(
+        "api/docs/",
+        SpectacularSwaggerView.as_view(url_name="schema"),
+        name="swagger-ui",
+    ),
+]
+
+========== accounts/models.py ==========
+
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+
+
+class Usuario(AbstractUser):
+    class Rol(models.TextChoices):
+        COMERCIAL = "comercial", "Comercial"
+        JEFA_TALLER = "jefa_taller", "Jefa de taller"
+        TALLER = "taller", "Taller"
+        GERENCIA = "gerencia", "Gerencia"
+
+    rol = models.CharField(
+        max_length=20,
+        choices=Rol.choices,
+        default=Rol.TALLER,
+        verbose_name="Rol de usuario",
+    )
+
+    def __str__(self):
+        return f"{self.username} - {self.get_rol_display()}"
+
+========== accounts/serializers.py ==========
+
+from django.contrib.auth import get_user_model
+from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+Usuario = get_user_model()
+
+
+class InicioSesionSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token["rol"] = user.rol
+        token["username"] = user.username
+        return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        user = self.user
+
+        data["usuario"] = {
+            "id": user.pk,
+            "username": user.username,
+            "nombre": user.get_full_name() or user.username,
+            "rol": user.rol,
+        }
+
+        return data
+
+
+class PerfilUsuarioSerializer(serializers.ModelSerializer):
+    nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Usuario
+        fields = ["id", "username", "nombre", "email", "rol"]
+
+    def get_nombre(self, obj):
+        return obj.get_full_name() or obj.username
+
+========== accounts/views.py ==========
+from django.shortcuts import render
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from .serializers import InicioSesionSerializer, PerfilUsuarioSerializer
+
+
+class InicioSesionView(TokenObtainPairView):
+    serializer_class = InicioSesionSerializer
+
+
+class PerfilUsuarioView(generics.RetrieveAPIView):
+    serializer_class = PerfilUsuarioSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+
+class CerrarSesionView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        refresh = request.data.get("refresh")
+
+        if not refresh:
+            from rest_framework.response import Response
+            from rest_framework import status
+
+            return Response(
+                {"detail": "Se requiere el token de renovación."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            RefreshToken(refresh).blacklist()
+        except Exception:
+            from rest_framework.response import Response
+            from rest_framework import status
+
+            return Response(
+                {"detail": "El token de renovación no es válido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from rest_framework.response import Response
+        from rest_framework import status
+
+        return Response(status=status.HTTP_205_RESET_CONTENT)
+
+========== config/settings.py (solo configuración relevante) ==========
+21:INSTALLED_APPS = [
+102:TIME_ZONE = 'America/Lima'
+104:USE_TZ = True
+113:AUTH_USER_MODEL = 'accounts.Usuario'
+117:REST_FRAMEWORK = {
+121:    'DEFAULT_PERMISSION_CLASSES': [
+129:SIMPLE_JWT = {
