@@ -1,0 +1,6 @@
+import { ClientRequest } from '../types';
+
+export const clientRequests: ClientRequest[] = [
+{ id: 'sol-1', client: 'Yesenia Condori', city: 'Juliaca', summary: 'Novia de Juliaca. Matrimonio: 15 de noviembre.', type: 'Novia', eventDate: '2026-11-15', received: 'Hoy, 10:20', channel: 'WhatsApp', corteId: 'princesa', complexity: 'Alta', collection: 'Aurora', price: 5200, features: ['provincia'] },
+{ id: 'sol-2', client: 'Mónica Revilla', city: 'Tacna', summary: 'Novia Luxury con bordado intenso. Boda: 24 de octubre.', type: 'Novia', eventDate: '2026-10-24', received: 'Ayer, 17:45', channel: 'Showroom', corteId: 'luxury', complexity: 'Muy alta', collection: 'Maison Luxe', price: 8900, bordado: 'Intenso' },
+{ id: 'sol-3', client: 'Ariana Gamarra', city: 'Arequipa', summary: 'Quinceañera línea imperio. Fiesta: 16 de enero.', type: 'Quinceañera', eventDate: '2027-01-16', received: 'Jue 24/09', channel: 'Instagram', corteId: 'imperio', complexity: 'Media', collection: 'Essenza', price: 3600 }];

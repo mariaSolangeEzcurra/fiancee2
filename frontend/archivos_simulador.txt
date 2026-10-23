@@ -1,0 +1,2006 @@
+﻿========== .\src\services\core.ts ==========
+
+const API_URL = (
+  import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
+).replace(/\/+$/, '');
+
+// Esta ruta es relativa a VITE_API_URL.
+// Ejemplo: API_URL=/api y REFRESH_PATH=/auth/token/refresh/
+const REFRESH_PATH = (
+  import.meta.env.VITE_TOKEN_REFRESH_PATH ||
+  '/auth/token/refresh/'
+).startsWith('/')
+  ? (
+      import.meta.env.VITE_TOKEN_REFRESH_PATH ||
+      '/auth/token/refresh/'
+    )
+  : `/${import.meta.env.VITE_TOKEN_REFRESH_PATH}`;
+
+const CATALOGO_PATH = '/core/catalogo/';
+const CAPACIDAD_PATH = '/core/capacidad/';
+
+export interface OperacionCatalogo {
+  id: number;
+  operacion_id: number;
+  nombre: string;
+  area: string;
+  orden: number;
+  tipo_tiempo: 'TRABAJO' | 'ESPERA';
+  horas_estimadas: string;
+  obligatoria: boolean;
+  dependencias: number[];
+  dependencias_nombres: string[];
+}
+
+export interface RutaCatalogo {
+  id: number;
+  taller: 'A' | 'C';
+  descripcion: string;
+  operaciones: OperacionCatalogo[];
+}
+
+export interface VestidoCatalogo {
+  id: number;
+  nombre: string;
+  descripcion: string;
+  rutas: RutaCatalogo[];
+}
+
+export interface HorarioTrabajadora {
+  dia_semana: number;
+  horas_disponibles: string;
+}
+
+export interface TrabajadoraCatalogo {
+  id: number;
+  nombre: string;
+  area: string;
+  habilidades: number[];
+  horarios: HorarioTrabajadora[];
+}
+
+export interface CatalogoSimulador {
+  vestidos: VestidoCatalogo[];
+  trabajadoras: TrabajadoraCatalogo[];
+}
+
+export interface TrabajadoraCapacidad {
+  trabajadora_id: number;
+  nombre: string;
+  area: string;
+  horas_semanales_disponibles: string;
+  horas_no_disponibles: string;
+  horas_reservadas: string;
+  horas_restantes: string;
+}
+
+export interface DiaCapacidad {
+  fecha: string;
+  dia_semana: number;
+  trabajadoras: TrabajadoraCapacidad[];
+}
+
+export interface CapacidadProduccion {
+  desde: string;
+  hasta: string;
+  dias: DiaCapacidad[];
+}
+
+interface ApiError {
+  detail?: string;
+  error?: string;
+  message?: string;
+}
+
+interface RefreshResponse {
+  access?: string;
+  refresh?: string;
+}
+
+function getAccessToken(): string | null {
+  return localStorage.getItem('fio_access');
+}
+
+function getRefreshToken(): string | null {
+  return localStorage.getItem('fio_refresh');
+}
+
+function saveAccessToken(token: string): void {
+  localStorage.setItem('fio_access', token);
+}
+
+function saveRefreshToken(token: string): void {
+  localStorage.setItem('fio_refresh', token);
+}
+
+function clearSessionTokens(): void {
+  localStorage.removeItem('fio_access');
+  localStorage.removeItem('fio_refresh');
+}
+
+function getErrorMessage(data: unknown): string | null {
+  if (typeof data === 'string' && data.trim()) {
+    return data;
+  }
+
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+
+  const error = data as ApiError;
+
+  return error.detail || error.error || error.message || null;
+}
+
+async function readResponse(response: Response): Promise<unknown> {
+  if (response.status === 204) {
+    return null;
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    return response.json().catch(() => null);
+  }
+
+  return response.text().catch(() => '');
+}
+
+/**
+ * Evita mÃºltiples renovaciones simultÃ¡neas cuando varias peticiones
+ * reciben un 401 al mismo tiempo.
+ */
+let refreshInProgress: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (refreshInProgress) {
+    return refreshInProgress;
+  }
+
+  refreshInProgress = (async (): Promise<string | null> => {
+    const refresh = getRefreshToken();
+
+    if (!refresh) {
+      clearSessionTokens();
+      return null;
+    }
+
+    let response: Response;
+
+    try {
+      response = await fetch(`${API_URL}${REFRESH_PATH}`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ refresh }),
+      });
+    } catch {
+      // Un fallo de red no demuestra que el refresh haya expirado.
+      throw new Error(
+        'No se pudo conectar con Django para renovar la sesiÃ³n. ' +
+          'Verifica que el backend estÃ© activo.'
+      );
+    }
+
+    const data = await readResponse(response);
+
+    if (!response.ok) {
+      if (response.status === 400 || response.status === 401) {
+        clearSessionTokens();
+        return null;
+      }
+
+      throw new Error(
+        getErrorMessage(data) ||
+          `No se pudo renovar la sesiÃ³n (${response.status}).`
+      );
+    }
+
+    const result = data as RefreshResponse | null;
+
+    if (!result || typeof result.access !== 'string' || !result.access) {
+      throw new Error(
+        'La respuesta de renovaciÃ³n de Django no contiene un token de acceso vÃ¡lido.'
+      );
+    }
+
+    saveAccessToken(result.access);
+
+    // SimpleJWT puede rotar el refresh token.
+    if (result.refresh) {
+      saveRefreshToken(result.refresh);
+    }
+
+    return result.access;
+  })();
+
+  try {
+    return await refreshInProgress;
+  } finally {
+    refreshInProgress = null;
+  }
+}
+
+async function fetchApi(
+  path: string,
+  options: RequestInit = {},
+  token?: string | null
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+
+  headers.set('Accept', 'application/json');
+
+  if (options.body != null && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  } else {
+    headers.delete('Authorization');
+  }
+
+  try {
+    return await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch {
+    throw new Error(
+      `No se pudo conectar con el backend en ${API_URL}. ` +
+        'Verifica que Django estÃ© ejecutÃ¡ndose y que la URL sea correcta.'
+    );
+  }
+}
+
+async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+  requiresAuth = true
+): Promise<T> {
+  let token = requiresAuth ? getAccessToken() : null;
+
+  if (requiresAuth && !token) {
+    token = await refreshAccessToken();
+
+    if (!token) {
+      throw new Error(
+        'Tu sesiÃ³n no tiene un token de acceso vÃ¡lido. Inicia sesiÃ³n nuevamente.'
+      );
+    }
+  }
+
+  let response = await fetchApi(path, options, token);
+
+  // Renovar y repetir una sola vez si el access token expirÃ³.
+  if (response.status === 401 && requiresAuth) {
+    const newToken = await refreshAccessToken();
+
+    if (!newToken) {
+      throw new Error(
+        'Tu sesiÃ³n ha vencido o el token de renovaciÃ³n no es vÃ¡lido. Inicia sesiÃ³n nuevamente.'
+      );
+    }
+
+    response = await fetchApi(path, options, newToken);
+  }
+
+  const data = await readResponse(response);
+
+  if (!response.ok) {
+    throw new Error(
+      getErrorMessage(data) ||
+        `Error del servidor (${response.status}) al consultar ${path}.`
+    );
+  }
+
+  return data as T;
+}
+
+/**
+ * GET /api/core/catalogo/
+ * Obtiene vestidos, rutas, operaciones y trabajadoras activas.
+ */
+export function getCatalogoSimulador(): Promise<CatalogoSimulador> {
+  return apiRequest<CatalogoSimulador>(
+    CATALOGO_PATH,
+    { method: 'GET' },
+    true
+  );
+}
+
+/**
+ * GET /api/core/capacidad/?desde=AAAA-MM-DD&hasta=AAAA-MM-DD
+ * Consulta la disponibilidad diaria que calcula Django.
+ */
+export function getCapacidadProduccion(
+  desde?: string,
+  hasta?: string
+): Promise<CapacidadProduccion> {
+  const params = new URLSearchParams();
+
+  if (desde) params.set('desde', desde);
+  if (hasta) params.set('hasta', hasta);
+
+  const query = params.toString();
+
+  return apiRequest<CapacidadProduccion>(
+    `${CAPACIDAD_PATH}${query ? `?${query}` : ''}`,
+    { method: 'GET' },
+    true
+  );
+}
+
+========== .\src\services\catalogAdapter.ts ==========
+
+import type {
+  CatalogoSimulador,
+  OperacionCatalogo,
+  RutaCatalogo,
+  VestidoCatalogo,
+} from './core';
+
+import type {
+  ProcessHours,
+  ProcessId,
+  TimeTemplate,
+  Workshop,
+} from '../types';
+
+/**
+ * Normaliza nombres sin modificar los datos originales de Django.
+ */
+function normalize(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Relaciona las operaciones de Django con los procesos que reconoce
+ * actualmente el simulador de React.
+ *
+ * Las operaciones sin equivalencia se omiten del cÃ¡lculo por proceso,
+ * pero permanecen en el catÃ¡logo original del backend.
+ */
+const PROCESS_MAP: Record<string, ProcessId> = {
+  patronaje: 'patronaje',
+  corte: 'corte',
+  'corte de tela': 'corte',
+  confeccion: 'confeccion',
+  entalle: 'entalle',
+  corse: 'corse',
+  corset: 'corse',
+  'prueba 1': 'prueba1',
+  'prueba 2': 'prueba2',
+  'prueba 3': 'pruebaFinal',
+  'prueba final': 'pruebaFinal',
+  ajustes: 'ajustes',
+  bordado: 'bordado',
+  encaje: 'encaje',
+  acabados: 'acabados',
+  basta: 'acabados',
+  lavanderia: 'lavanderia',
+};
+
+export function mapProcessName(nombre: string): ProcessId | null {
+  return PROCESS_MAP[normalize(nombre)] ?? null;
+}
+
+/**
+ * Convierte las horas de trabajo de una ruta en el formato de React.
+ * Las operaciones de espera no se suman como horas de trabajo.
+ */
+export function routeToHours(ruta: RutaCatalogo): ProcessHours {
+  const hours: ProcessHours = {};
+
+  const orderedOperations = [...ruta.operaciones].sort(
+    (a, b) => a.orden - b.orden
+  );
+
+  for (const operacion of orderedOperations) {
+    if (operacion.tipo_tiempo !== 'TRABAJO') continue;
+
+    const process = mapProcessName(operacion.nombre);
+    if (!process) continue;
+
+    const value = Number(operacion.horas_estimadas);
+
+    if (!Number.isFinite(value) || value < 0) continue;
+
+    hours[process] = (hours[process] ?? 0) + value;
+  }
+
+  return hours;
+}
+
+/**
+ * Genera un identificador legible para mantener compatibilidad con
+ * el selector de vestidos existente en el frontend.
+ */
+export function slugify(value: string): string {
+  return normalize(value)
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Construye plantillas desde el catÃ¡logo REAL de Django.
+ *
+ * Cada plantilla conserva:
+ * - El ID real del vestido.
+ * - El ID real de la ruta.
+ * - El taller correspondiente.
+ * - Las horas de trabajo por proceso reconocido.
+ * - Las horas de espera.
+ * - El orden de las operaciones.
+ *
+ * Nota: backendDressId y backendRouteId deben estar declarados
+ * como opcionales en la interfaz TimeTemplate de types/index.ts.
+ */
+export function catalogToTemplates(
+  catalog: CatalogoSimulador
+): TimeTemplate[] {
+  const templates: TimeTemplate[] = [];
+
+  for (const vestido of catalog.vestidos) {
+    for (const ruta of vestido.rutas) {
+      const workshop: Workshop =
+        ruta.taller === 'C' ? 'Taller C' : 'Taller A';
+
+      const waitingByProcess: Partial<Record<ProcessId, number>> = {};
+      let waitingHours = 0;
+
+      const orderedOperations = [...ruta.operaciones].sort(
+        (a, b) => a.orden - b.orden
+      );
+
+      for (const operation of orderedOperations) {
+        if (operation.tipo_tiempo !== 'ESPERA') continue;
+
+        const value = Number(operation.horas_estimadas);
+
+        if (!Number.isFinite(value) || value <= 0) continue;
+
+        const operationName = normalize(operation.nombre);
+
+        // La espera de compra de materiales se considera previa
+        // al inicio de la producciÃ³n.
+        if (
+          operationName === 'compra materiales' ||
+          operationName === 'compra de materiales'
+        ) {
+          waitingHours += value;
+          continue;
+        }
+
+        const process = mapProcessName(operation.nombre);
+
+        if (process) {
+          waitingByProcess[process] =
+            (waitingByProcess[process] ?? 0) + value;
+        }
+      }
+
+      const processOrder: ProcessId[] = [];
+
+      for (const operation of orderedOperations) {
+        const process = mapProcessName(operation.nombre);
+
+        if (process && !processOrder.includes(process)) {
+          processOrder.push(process);
+        }
+      }
+
+      /*
+       * Se conserva el slug del vestido para compatibilidad con
+       * ContractInput.corteId, que actualmente usa un string.
+       *
+       * Los IDs numÃ©ricos de Django se guardan por separado para
+       * futuras solicitudes de persistencia al backend.
+       */
+      templates.push({
+        id: slugify(vestido.nombre),
+        name: vestido.nombre,
+        workshop,
+        description: ruta.descripcion || vestido.descripcion || '',
+        hours: routeToHours(ruta),
+        waitingHours,
+        waitingByProcess,
+        source: 'backend',
+        processOrder,
+        backendDressId: vestido.id,
+        backendRouteId: ruta.id,
+      });
+    }
+  }
+
+  return templates;
+}
+
+/**
+ * Busca un vestido por nombre, slug o ID numÃ©rico.
+ */
+export function findCatalogDress(
+  catalog: CatalogoSimulador,
+  idOrName: string
+): VestidoCatalogo | undefined {
+  const target = normalize(idOrName);
+
+  return catalog.vestidos.find((vestido) => {
+    return (
+      normalize(vestido.nombre) === target ||
+      slugify(vestido.nombre) === target ||
+      String(vestido.id) === idOrName
+    );
+  });
+}
+
+/**
+ * Busca una operaciÃ³n por nombre dentro de una ruta.
+ */
+export function findCatalogOperation(
+  ruta: RutaCatalogo,
+  nombre: string
+): OperacionCatalogo | undefined {
+  const target = normalize(nombre);
+
+  return ruta.operaciones.find(
+    (operacion) => normalize(operacion.nombre) === target
+  );
+}
+
+========== .\src\components\simulator\useSimulator.ts ==========
+
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+
+import type {
+  ContractInput,
+  ProcessId,
+  ProcessHours,
+  SimulationResult,
+  TimeTemplate,
+  AreaId,
+  AreaNeed,
+  Tone,
+} from '../../types';
+
+import {
+  getCapacidadProduccion,
+  getCatalogoSimulador,
+} from '../../services/core';
+
+import type {
+  CapacidadProduccion,
+  CatalogoSimulador,
+  OperacionCatalogo,
+  RutaCatalogo,
+} from '../../services/core';
+
+import { catalogToTemplates } from '../../services/catalogAdapter';
+import {
+  addCalendarDays,
+  TODAY,
+  toISO,
+} from '../../utils/dates';
+import { estimateHours } from '../../utils/estimate';
+
+interface CatalogState {
+  templates: TimeTemplate[];
+  catalog: CatalogoSimulador | null;
+  loading: boolean;
+  error: string | null;
+}
+
+interface CapacityState {
+  data: CapacidadProduccion | null;
+  loading: boolean;
+  error: string | null;
+}
+
+interface ResolvedItem {
+  input: ContractInput;
+  template: TimeTemplate;
+  hours: ProcessHours;
+}
+
+interface ScheduledOperation {
+  itemName: string;
+  operationName: string;
+  operationId: number;
+  process: ProcessId | null;
+  area: AreaId | null;
+  requiredHours: number;
+  assignedHours: number;
+  startDate: string | null;
+  finishDate: string | null;
+  workerIds: string[];
+  waiting: boolean;
+}
+
+interface ScheduleResult {
+  feasible: boolean;
+  complete: boolean;
+  finishDates: string[];
+  startDates: string[];
+  totalHours: number;
+  reasons: string[];
+  operations: ScheduledOperation[];
+  assignedByArea: Map<AreaId, number>;
+  workersByArea: Map<AreaId, Set<string>>;
+  capacityByArea: Map<AreaId, number>;
+  reservedByArea: Map<AreaId, number>;
+  remainingByArea: Map<AreaId, number>;
+  currentLoad: number;
+}
+
+interface CapacityRange {
+  desde: string;
+  hasta: string;
+  complete: boolean;
+}
+
+interface DailyWorkerCapacity {
+  fecha: string;
+  trabajadores: Map<number, number>;
+}
+
+const MAX_CAPACITY_DAYS = 365;
+const API_MAX_DAYS = 90;
+const NEAR_TERM_DAYS = 14;
+const HOURS_EPSILON = 0.0001;
+
+const AREA_IDS: AreaId[] = [
+  'patronaje',
+  'corte',
+  'confeccion',
+  'bordado',
+  'encaje',
+  'pruebas',
+  'acabados',
+  'lavanderia',
+];
+
+function todayISO(): string {
+  return toISO(TODAY);
+}
+
+function dateFromISO(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function dayDifference(from: string, to: string): number {
+  const start = dateFromISO(from).getTime();
+  const end = dateFromISO(to).getTime();
+
+  return Math.round((end - start) / 86400000);
+}
+
+function createInitialInput(): ContractInput {
+  const today = todayISO();
+  const eventDate = addCalendarDays(today, 180);
+
+  return {
+    client: '',
+    city: '',
+    eventDate,
+    deliveryDate: addCalendarDays(eventDate, -7),
+    price: 0,
+    corteId: '',
+    workshop: 'Taller A',
+    type: 'QuinceaÃ±era',
+    complexity: 'Media',
+    collection: 'Maison Luxe',
+    bordado: 'Ninguno',
+    encaje: 'Ninguno',
+    volume: 'EstÃ¡ndar',
+    features: [],
+    excluded: [],
+  };
+}
+
+function normalize(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function parseHours(value: string | number | undefined): number {
+  const hours = Number(value);
+
+  return Number.isFinite(hours) ? Math.max(0, hours) : 0;
+}
+
+function resolveTemplate(
+  templates: TimeTemplate[],
+  input?: ContractInput | null
+): TimeTemplate | null {
+  if (
+    !input ||
+    !input.corteId ||
+    !input.workshop ||
+    templates.length === 0
+  ) {
+    return null;
+  }
+
+  const target = normalize(String(input.corteId));
+
+  return (
+    templates.find(
+      (template) =>
+        String(template.id) === String(input.corteId) &&
+        template.workshop === input.workshop
+    ) ??
+    templates.find(
+      (template) =>
+        template.backendDressId !== undefined &&
+        String(template.backendDressId) === String(input.corteId) &&
+        template.workshop === input.workshop
+    ) ??
+    templates.find(
+      (template) =>
+        normalize(template.name) === target &&
+        template.workshop === input.workshop
+    ) ??
+    null
+  );
+}
+
+function areaFromBackend(value: string): AreaId | null {
+  const area = normalize(value);
+
+  const mapping: Record<string, AreaId> = {
+    patronaje: 'patronaje',
+    corte: 'corte',
+    confeccion: 'confeccion',
+    entalle: 'confeccion',
+    corse: 'confeccion',
+    corset: 'confeccion',
+    bordado: 'bordado',
+    encaje: 'encaje',
+    pruebas: 'pruebas',
+    prueba: 'pruebas',
+    acabados: 'acabados',
+    lavanderia: 'lavanderia',
+  };
+
+  return mapping[area] ?? null;
+}
+
+function processFromOperation(
+  operation: OperacionCatalogo
+): ProcessId | null {
+  const name = normalize(operation.nombre);
+
+  if (name.includes('patronaje')) return 'patronaje';
+  if (name.includes('corte')) return 'corte';
+  if (name.includes('confeccion')) return 'confeccion';
+  if (name.includes('entalle')) return 'entalle';
+
+  if (name.includes('corse') || name.includes('corset')) {
+    return 'corse';
+  }
+
+  if (name.includes('prueba 1')) return 'prueba1';
+  if (name.includes('prueba 2')) return 'prueba2';
+
+  if (
+    name.includes('prueba 3') ||
+    name.includes('prueba final')
+  ) {
+    return 'pruebaFinal';
+  }
+
+  if (name.includes('ajuste')) return 'ajustes';
+  if (name.includes('bordado')) return 'bordado';
+  if (name.includes('encaje')) return 'encaje';
+
+  if (
+    name.includes('acabado') ||
+    name.includes('basta')
+  ) {
+    return 'acabados';
+  }
+
+  if (name.includes('entrega')) return 'entrega';
+
+  return null;
+}
+
+function operationIsExcluded(
+  operation: OperacionCatalogo,
+  input: ContractInput
+): boolean {
+  const process = processFromOperation(operation);
+
+  return (
+    process !== null &&
+    (input.excluded ?? []).includes(process)
+  );
+}
+
+function routeForTemplate(
+  catalog: CatalogoSimulador,
+  template: TimeTemplate
+): RutaCatalogo | null {
+  if (
+    template.backendDressId === undefined ||
+    template.backendRouteId === undefined
+  ) {
+    return null;
+  }
+
+  const dress = catalog.vestidos.find(
+    (item) => item.id === template.backendDressId
+  );
+
+  if (!dress) return null;
+
+  const expectedWorkshop =
+    template.workshop === 'Taller C' ? 'C' : 'A';
+
+  return (
+    dress.rutas.find(
+      (route) =>
+        route.id === template.backendRouteId &&
+        route.taller === expectedWorkshop
+    ) ?? null
+  );
+}
+
+function validInput(input?: ContractInput | null): string | null {
+  if (!input) {
+    return 'Completa los datos antes de simular.';
+  }
+
+  if (!input.corteId) {
+    return 'Selecciona un vestido del catÃ¡logo de Django.';
+  }
+
+  if (!input.client.trim()) {
+    return 'Ingresa el nombre de la clienta.';
+  }
+
+  if (!input.eventDate || !input.deliveryDate) {
+    return 'Completa la fecha del evento y la fecha de entrega.';
+  }
+
+  if (input.deliveryDate < todayISO()) {
+    return 'La fecha de entrega no puede estar en el pasado.';
+  }
+
+  if (input.deliveryDate > input.eventDate) {
+    return 'La fecha de entrega no puede ser posterior al evento.';
+  }
+
+  if (!Number.isFinite(input.price) || input.price < 0) {
+    return 'El precio debe ser un nÃºmero igual o mayor que cero.';
+  }
+
+  return null;
+}
+
+function capacityRange(items: ContractInput[]): CapacityRange {
+  const desde = todayISO();
+  const maxDate = addCalendarDays(desde, MAX_CAPACITY_DAYS - 1);
+
+  const requestedDates = items
+    .map((item) => item.deliveryDate)
+    .filter(Boolean)
+    .sort();
+
+  const latestRequestedDate =
+    requestedDates[requestedDates.length - 1] ?? maxDate;
+
+  return {
+    desde,
+    hasta: latestRequestedDate < maxDate
+      ? latestRequestedDate
+      : maxDate,
+    complete: latestRequestedDate <= maxDate,
+  };
+}
+
+function emptyScheduleResult(
+  complete: boolean,
+  reasons: string[] = []
+): ScheduleResult {
+  return {
+    feasible: true,
+    complete,
+    finishDates: [],
+    startDates: [],
+    totalHours: 0,
+    reasons,
+    operations: [],
+    assignedByArea: new Map(),
+    workersByArea: new Map(),
+    capacityByArea: new Map(),
+    reservedByArea: new Map(),
+    remainingByArea: new Map(),
+    currentLoad: 0,
+  };
+}
+
+function addToMap<K>(
+  map: Map<K, number>,
+  key: K,
+  value: number
+): void {
+  map.set(key, (map.get(key) ?? 0) + value);
+}
+
+/**
+ * Planifica con las rutas y la disponibilidad diaria de Django.
+ *
+ * Importante:
+ * - horas_restantes ya descuenta las reservas de Django.
+ * - Las horas se consumen de forma provisional en memoria.
+ * - Las operaciones ESPERA avanzan el calendario, pero no consumen
+ *   horas de trabajadoras.
+ * - Esta funciÃ³n no crea contratos ni reservas en el backend.
+ */
+function scheduleFromBackend(
+  items: ResolvedItem[],
+  catalog: CatalogoSimulador,
+  capacity: CapacidadProduccion,
+  rangeComplete: boolean
+): ScheduleResult {
+  const reasons: string[] = [];
+  const finishDates: string[] = [];
+  const startDates: string[] = [];
+  const operationsLog: ScheduledOperation[] = [];
+
+  const assignedByArea = new Map<AreaId, number>();
+  const workersByArea = new Map<AreaId, Set<string>>();
+  const capacityByArea = new Map<AreaId, number>();
+  const reservedByArea = new Map<AreaId, number>();
+  const remainingByArea = new Map<AreaId, number>();
+
+  let feasible = true;
+  let complete = rangeComplete;
+  let totalHours = 0;
+
+  // Disponibilidad mutable por fecha y trabajadora.
+  // Se inicializa directamente con horas_restantes.
+  const remaining = new Map<string, Map<number, number>>();
+
+  const workerById = new Map(
+    catalog.trabajadoras.map((worker) => [worker.id, worker])
+  );
+
+  const days: DailyWorkerCapacity[] = [...capacity.dias]
+    .sort((a, b) => a.fecha.localeCompare(b.fecha))
+    .map((day) => {
+      const dailyWorkers = new Map<number, number>();
+
+      for (const worker of day.trabajadoras) {
+        const free = parseHours(worker.horas_restantes);
+        const reserved = parseHours(worker.horas_reservadas);
+        const area = areaFromBackend(worker.area);
+
+        dailyWorkers.set(worker.trabajadora_id, free);
+
+        if (area) {
+          addToMap(remainingByArea, area, free);
+          addToMap(capacityByArea, area, free + reserved);
+          addToMap(reservedByArea, area, reserved);
+        }
+      }
+
+      remaining.set(day.fecha, dailyWorkers);
+
+      return {
+        fecha: day.fecha,
+        trabajadores: dailyWorkers,
+      };
+    });
+
+  const availableDates = days.map((day) => day.fecha);
+
+  if (availableDates.length === 0) {
+    return emptyScheduleResult(false, [
+      'Django no devolviÃ³ dÃ­as de capacidad para planificar.',
+    ]);
+  }
+
+  const capacityEnd = availableDates[availableDates.length - 1];
+  const nearTermEnd = addCalendarDays(todayISO(), NEAR_TERM_DAYS - 1);
+
+  // Carga real reservada en los primeros 14 dÃ­as consultados.
+  let nearTermCapacity = 0;
+  let nearTermReserved = 0;
+
+  for (const day of capacity.dias) {
+    if (day.fecha < todayISO() || day.fecha > nearTermEnd) continue;
+
+    for (const worker of day.trabajadoras) {
+      nearTermCapacity +=
+        parseHours(worker.horas_restantes) +
+        parseHours(worker.horas_reservadas);
+
+      nearTermReserved += parseHours(worker.horas_reservadas);
+    }
+  }
+
+  const currentLoad = nearTermCapacity > 0
+    ? nearTermReserved / nearTermCapacity
+    : 0;
+
+  // Primero se procesan los vestidos con entrega mÃ¡s prÃ³xima.
+  const orderedItems = [...items].sort(
+    (a, b) => a.input.deliveryDate.localeCompare(b.input.deliveryDate)
+  );
+
+  for (const item of orderedItems) {
+    const route = routeForTemplate(catalog, item.template);
+
+    if (!route) {
+      feasible = false;
+
+      reasons.push(
+        `No se encontrÃ³ la ruta de "${item.template.name}" ` +
+        `para ${item.input.workshop}.`
+      );
+
+      continue;
+    }
+
+    const routeOperations = [...route.operaciones]
+      .filter(
+        (operation) =>
+          operation.obligatoria &&
+          !operationIsExcluded(operation, item.input)
+      )
+      .sort((a, b) => a.orden - b.orden);
+
+    // El total requerido se calcula para toda la ruta, no solo para
+    // las operaciones que logren programarse.
+    totalHours += routeOperations.reduce((sum, operation) => {
+      if (operation.tipo_tiempo === 'ESPERA') return sum;
+      return sum + parseHours(operation.horas_estimadas);
+    }, 0);
+
+    let cursorDate = todayISO();
+    let firstWorkDate: string | null = null;
+    let itemFailed = false;
+
+    const deadline = item.input.deliveryDate;
+
+    for (const operation of routeOperations) {
+      const requiredHours = parseHours(operation.horas_estimadas);
+
+      const process = processFromOperation(operation);
+      const area = areaFromBackend(operation.area);
+      const isWaiting = operation.tipo_tiempo === 'ESPERA';
+
+      const logEntry: ScheduledOperation = {
+        itemName: item.template.name,
+        operationName: operation.nombre,
+        operationId: operation.operacion_id,
+        process,
+        area,
+        requiredHours,
+        assignedHours: 0,
+        startDate: null,
+        finishDate: null,
+        workerIds: [],
+        waiting: isWaiting,
+      };
+
+      if (requiredHours <= HOURS_EPSILON) {
+        operationsLog.push(logEntry);
+        continue;
+      }
+
+      // Esperas en calendario, sin asignar horas de trabajadoras.
+      if (isWaiting) {
+        const waitingDays = Math.ceil(requiredHours / 24);
+
+        logEntry.startDate = cursorDate;
+        cursorDate = addCalendarDays(cursorDate, waitingDays);
+        logEntry.finishDate = cursorDate;
+
+        operationsLog.push(logEntry);
+
+        if (cursorDate > deadline) {
+          feasible = false;
+          itemFailed = true;
+
+          reasons.push(
+            `"${item.template.name}": la espera de ` +
+            `"${operation.nombre}" supera la entrega ${deadline}.`
+          );
+
+          break;
+        }
+
+        if (cursorDate > capacityEnd) {
+          complete = false;
+          itemFailed = true;
+
+          reasons.push(
+            `"${item.template.name}": la espera de ` +
+            `"${operation.nombre}" supera el periodo consultado.`
+          );
+
+          break;
+        }
+
+        continue;
+      }
+
+      if (cursorDate > deadline || cursorDate > capacityEnd) {
+        itemFailed = true;
+
+        if (deadline > capacityEnd) {
+          complete = false;
+        } else {
+          feasible = false;
+        }
+
+        reasons.push(
+          `"${item.template.name}": no hay un periodo consultado ` +
+          `vÃ¡lido para "${operation.nombre}".`
+        );
+
+        operationsLog.push(logEntry);
+        break;
+      }
+
+      // La habilidad se compara con el ID global de la operaciÃ³n,
+      // no con el ID de la fila de la ruta.
+      const qualifiedWorkers = catalog.trabajadoras.filter(
+        (worker) =>
+          worker.habilidades.includes(operation.operacion_id)
+      );
+
+      if (qualifiedWorkers.length === 0) {
+        feasible = false;
+        itemFailed = true;
+
+        reasons.push(
+          `"${item.template.name}": ninguna trabajadora tiene ` +
+          `la habilidad requerida para "${operation.nombre}".`
+        );
+
+        operationsLog.push(logEntry);
+        break;
+      }
+
+      let hoursLeft = requiredHours;
+      let firstScheduledDate: string | null = null;
+      let lastScheduledDate: string | null = null;
+
+      const usedWorkers = new Set<string>();
+
+      // Copia provisional: si la operaciÃ³n no se completa, no se
+      // consume ninguna hora de esta operaciÃ³n.
+      const tentative = new Map<string, Map<number, number>>();
+
+      for (const [date, workerHours] of remaining.entries()) {
+        tentative.set(date, new Map(workerHours));
+      }
+
+      for (
+        let date = cursorDate;
+        date <= capacityEnd &&
+        date <= deadline &&
+        hoursLeft > HOURS_EPSILON;
+        date = addCalendarDays(date, 1)
+      ) {
+        const dailyCapacity = tentative.get(date);
+
+        if (!dailyCapacity) continue;
+
+        // Se ordena por disponibilidad del dÃ­a. Cada trabajadora
+        // aparece una sola vez en el catÃ¡logo.
+        const candidates = [...qualifiedWorkers].sort(
+          (a, b) =>
+            (dailyCapacity.get(b.id) ?? 0) -
+            (dailyCapacity.get(a.id) ?? 0)
+        );
+
+        for (const worker of candidates) {
+          const freeHours = dailyCapacity.get(worker.id) ?? 0;
+
+          if (freeHours <= HOURS_EPSILON) continue;
+
+          const assigned = Math.min(hoursLeft, freeHours);
+
+          dailyCapacity.set(worker.id, freeHours - assigned);
+          hoursLeft -= assigned;
+
+          firstScheduledDate ??= date;
+          lastScheduledDate = date;
+          usedWorkers.add(String(worker.id));
+
+          if (hoursLeft <= HOURS_EPSILON) break;
+        }
+      }
+
+      if (hoursLeft > HOURS_EPSILON) {
+        itemFailed = true;
+
+        if (deadline > capacityEnd) {
+          complete = false;
+        } else {
+          feasible = false;
+        }
+
+        reasons.push(
+          `"${item.template.name}": faltan ` +
+          `${hoursLeft.toFixed(2)} horas para completar ` +
+          `"${operation.nombre}" antes de ${deadline}.`
+        );
+
+        // No se confirma la copia provisional.
+        operationsLog.push(logEntry);
+        break;
+      }
+
+      // Confirmar el consumo provisional de esta operaciÃ³n.
+      remaining.clear();
+
+      for (const [date, workerHours] of tentative.entries()) {
+        remaining.set(date, workerHours);
+      }
+
+      logEntry.assignedHours = requiredHours;
+      logEntry.startDate = firstScheduledDate;
+      logEntry.finishDate = lastScheduledDate;
+      logEntry.workerIds = [...usedWorkers];
+
+      operationsLog.push(logEntry);
+
+      if (area) {
+        addToMap(assignedByArea, area, requiredHours);
+
+        const assignedStaff =
+          workersByArea.get(area) ?? new Set<string>();
+
+        for (const workerId of usedWorkers) {
+          assignedStaff.add(workerId);
+        }
+
+        workersByArea.set(area, assignedStaff);
+      }
+
+      if (firstWorkDate === null && firstScheduledDate) {
+        firstWorkDate = firstScheduledDate;
+      }
+
+      if (lastScheduledDate) {
+        cursorDate = lastScheduledDate;
+      }
+    }
+
+    if (firstWorkDate) startDates.push(firstWorkDate);
+
+    if (!itemFailed) {
+      finishDates.push(cursorDate);
+
+      if (cursorDate > deadline) {
+        feasible = false;
+
+        reasons.push(
+          `"${item.template.name}": la finalizaciÃ³n calculada ` +
+          `(${cursorDate}) supera la fecha de entrega (${deadline}).`
+        );
+      }
+    }
+  }
+
+  if (!rangeComplete) {
+    complete = false;
+
+    reasons.push(
+      'El horizonte supera los 365 dÃ­as consultados. ' +
+      'No se puede confirmar la capacidad fuera de ese periodo.'
+    );
+  }
+
+  reasons.push(
+    'La planificaciÃ³n utiliza las horas restantes devueltas por Django ' +
+    'y las habilidades asociadas a cada operaciÃ³n.'
+  );
+
+  reasons.push(
+    'Las operaciones de tipo ESPERA consumen tiempo calendario, ' +
+    'pero no horas de trabajadoras.'
+  );
+
+  reasons.push(
+    'La cola de vestidos pendientes no estÃ¡ disponible en estas API; ' +
+    'no se puede confirmar el nÃºmero de vestidos por delante.'
+  );
+
+  reasons.push(
+    'La planificaciÃ³n es provisional y no crea reservas en Django.'
+  );
+
+  // Evitar variables sin uso y mantener explÃ­cito el catÃ¡logo de IDs.
+  void workerById;
+
+  return {
+    feasible,
+    complete,
+    finishDates,
+    startDates,
+    totalHours,
+    reasons,
+    operations: operationsLog,
+    assignedByArea,
+    workersByArea,
+    capacityByArea,
+    reservedByArea,
+    remainingByArea,
+    currentLoad,
+  };
+}
+
+function buildAreaNeeds(
+  schedule: ScheduleResult,
+  catalog: CatalogoSimulador
+): AreaNeed[] {
+  return AREA_IDS
+    .map((area): AreaNeed => {
+      const areaOperations = schedule.operations.filter(
+        (operation) =>
+          operation.area === area &&
+          !operation.waiting
+      );
+
+      const needed = areaOperations.reduce(
+        (sum, operation) => sum + operation.requiredHours,
+        0
+      );
+
+      // Capacidad libre agregada antes de aceptar el nuevo vestido.
+      const available = schedule.remainingByArea.get(area) ?? 0;
+      const reserved = schedule.reservedByArea.get(area) ?? 0;
+      const capacity = schedule.capacityByArea.get(area) ?? available;
+      const assigned = schedule.assignedByArea.get(area) ?? 0;
+
+      const margin = available - needed;
+
+      const utilAfter = capacity > 0
+        ? (reserved + assigned) / capacity
+        : needed > 0 ? 1 : 0;
+
+      const staffSet =
+        schedule.workersByArea.get(area) ?? new Set<string>();
+
+      const staff = catalog.trabajadoras
+        .filter((worker) => staffSet.has(String(worker.id)))
+        .map((worker) => worker.nombre);
+
+      // No inferir personas necesarias a partir de horas/8:
+      // las horas se distribuyen entre fechas y habilidades reales.
+      // Se muestra el personal distinto efectivamente asignado.
+      const staffNeeded = staff.length;
+
+      let tone: Tone = 'ok';
+
+      if (needed > available + HOURS_EPSILON) {
+        tone = 'bad';
+      } else if (utilAfter >= 0.9 || margin < 8) {
+        tone = 'risk';
+      }
+
+      return {
+        area,
+        capacity,
+        committed: reserved + assigned,
+        available,
+        utilization: capacity > 0 ? reserved / capacity : 0,
+        needed,
+        margin,
+        utilAfter,
+        readyDay: 0,
+        tone,
+        staff,
+        staffNeeded,
+      };
+    })
+    .filter((area) => area.needed > 0 || area.available > 0);
+}
+
+function buildSimulationResult(
+  items: ResolvedItem[],
+  schedule: ScheduleResult,
+  catalog: CatalogoSimulador
+): SimulationResult {
+  const target = items[0].input;
+
+  const requestedDelivery = items
+    .map((item) => item.input.deliveryDate)
+    .sort()
+    .at(-1) ?? target.deliveryDate;
+
+  const lastFinish = schedule.finishDates
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? todayISO();
+
+  const firstStart = schedule.startDates
+    .filter(Boolean)
+    .sort()[0] ?? todayISO();
+
+  const start = dateFromISO(firstStart);
+  const finish = dateFromISO(lastFinish);
+  const delivery = dateFromISO(requestedDelivery);
+  const event = dateFromISO(target.eventDate);
+
+  const marginDays = dayDifference(lastFinish, requestedDelivery);
+  const areas = buildAreaNeeds(schedule, catalog);
+
+  const critical = [...areas].sort(
+    (a, b) => a.margin - b.margin
+  )[0] ?? null;
+
+  const availableHours = areas.reduce(
+    (sum, area) => sum + area.available,
+    0
+  );
+
+  const marginHours = availableHours - schedule.totalHours;
+
+  const allItemsHaveFinishDates =
+    schedule.finishDates.length === items.length;
+
+  let status: SimulationResult['status'] = 'risk';
+
+  if (!schedule.feasible && schedule.complete) {
+    status = 'bad';
+  } else if (
+    schedule.feasible &&
+    schedule.complete &&
+    allItemsHaveFinishDates &&
+    marginDays >= 7
+  ) {
+    status = 'ok';
+  } else if (
+    schedule.feasible &&
+    schedule.complete &&
+    allItemsHaveFinishDates &&
+    marginDays < 0
+  ) {
+    status = 'bad';
+  }
+
+  const reasons = [...schedule.reasons];
+
+  if (!schedule.complete) {
+    reasons.push(
+      'La simulaciÃ³n es parcial: no se ha confirmado la viabilidad ' +
+      'de todo el periodo solicitado.'
+    );
+  }
+
+  const operationTotals = new Map<ProcessId, number>();
+  const processAreas = new Map<ProcessId, AreaId>();
+
+  for (const operation of schedule.operations) {
+    if (!operation.process || operation.waiting) continue;
+
+    operationTotals.set(
+      operation.process,
+      (operationTotals.get(operation.process) ?? 0) +
+        operation.requiredHours
+    );
+
+    if (operation.area) {
+      processAreas.set(operation.process, operation.area);
+    }
+  }
+
+  const byProcess = [...operationTotals.entries()].map(
+    ([process, hours]) => ({
+      process,
+      hours,
+      area: processAreas.get(process) ?? null,
+    })
+  );
+
+  const reservedHours = [...schedule.reservedByArea.values()]
+    .reduce((sum, hours) => sum + hours, 0);
+
+  return {
+    status,
+    totalHours: schedule.totalHours,
+    byProcess,
+    areas,
+    start,
+    finish,
+    delivery,
+    event,
+    deliveryDays: dayDifference(firstStart, requestedDelivery),
+    marginDays,
+    availableHours,
+    marginHours,
+    critical,
+    queue: {
+      // Las API actuales no exponen el nÃºmero real de vestidos pendientes.
+      dressesAhead: 0,
+      hoursAhead: 0,
+      delayDays: 0,
+    },
+    currentLoad: schedule.currentLoad,
+    staffNeeded: Math.max(
+      0,
+      ...areas.map((area) => area.staffNeeded)
+    ),
+    minLead: dayDifference(firstStart, lastFinish),
+    reasons,
+    alternativeDate:
+      status === 'bad' && lastFinish > requestedDelivery
+        ? dateFromISO(lastFinish)
+        : null,
+  };
+}
+
+export function useSimulator(initial?: ContractInput) {
+  const [input, setInput] = useState<ContractInput>(
+    () => initial ?? createInitialInput()
+  );
+
+  const [result, setResult] =
+    useState<SimulationResult | null>(null);
+
+  const [simulatedInputKey, setSimulatedInputKey] =
+    useState<string | null>(null);
+
+  const [simulating, setSimulating] = useState(false);
+
+  const [simulationError, setSimulationError] =
+    useState<string | null>(null);
+
+  const [catalog, setCatalog] = useState<CatalogState>({
+    templates: [],
+    catalog: null,
+    loading: true,
+    error: null,
+  });
+
+  const [capacity, setCapacity] = useState<CapacityState>({
+    data: null,
+    loading: false,
+    error: null,
+  });
+
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runIdRef = useRef(0);
+
+  const cancelPendingRun = useCallback(() => {
+    runIdRef.current += 1;
+
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+
+    setSimulating(false);
+  }, []);
+
+  const refreshCatalog = useCallback(async () => {
+    setCatalog((current) => ({
+      ...current,
+      loading: true,
+      error: null,
+    }));
+
+    try {
+      const response = await getCatalogoSimulador();
+
+      const templates = catalogToTemplates(response).filter(
+        (template) =>
+          template.source === 'backend' &&
+          template.backendDressId !== undefined &&
+          template.backendRouteId !== undefined
+      );
+
+      if (templates.length === 0) {
+        throw new Error(
+          'Django no devolviÃ³ rutas utilizables. Verifica el catÃ¡logo.'
+        );
+      }
+
+      setCatalog({
+        templates,
+        catalog: response,
+        loading: false,
+        error: null,
+      });
+    } catch (error: unknown) {
+      setCatalog({
+        templates: [],
+        catalog: null,
+        loading: false,
+        error: error instanceof Error
+          ? error.message
+          : 'No se pudo cargar el catÃ¡logo de Django.',
+      });
+    }
+  }, []);
+
+  const refreshCapacity = useCallback(
+    async (desde?: string, hasta?: string) => {
+      setCapacity((current) => ({
+        ...current,
+        loading: true,
+        error: null,
+      }));
+
+      try {
+        const data = await getCapacidadProduccion(desde, hasta);
+
+        setCapacity({
+          data,
+          loading: false,
+          error: null,
+        });
+
+        return data;
+      } catch (error: unknown) {
+        const message = error instanceof Error
+          ? error.message
+          : 'No se pudo consultar la capacidad de Django.';
+
+        setCapacity({
+          data: null,
+          loading: false,
+          error: message,
+        });
+
+        throw new Error(message);
+      }
+    },
+    []
+  );
+
+  /**
+   * Django admite hasta 90 dÃ­as por peticiÃ³n.
+   * Se combinan los rangos sin duplicar fechas.
+   */
+  const fetchCapacityRange = useCallback(
+    async (
+      desde: string,
+      hasta: string
+    ): Promise<CapacidadProduccion> => {
+      const responses: CapacidadProduccion[] = [];
+      let chunkStart = desde;
+
+      while (chunkStart <= hasta) {
+        const proposedEnd = addCalendarDays(
+          chunkStart,
+          API_MAX_DAYS - 1
+        );
+
+        const chunkEnd = proposedEnd < hasta
+          ? proposedEnd
+          : hasta;
+
+        const response = await getCapacidadProduccion(
+          chunkStart,
+          chunkEnd
+        );
+
+        responses.push(response);
+        chunkStart = addCalendarDays(chunkEnd, 1);
+      }
+
+      const firstResponse = responses[0];
+
+      if (!firstResponse) {
+        throw new Error('No se recibiÃ³ informaciÃ³n de capacidad.');
+      }
+
+      const daysByDate = new Map<
+        string,
+        (typeof firstResponse.dias)[number]
+      >();
+
+      for (const response of responses) {
+        for (const day of response.dias) {
+          daysByDate.set(day.fecha, day);
+        }
+      }
+
+      const merged = {
+        ...firstResponse,
+        desde,
+        hasta,
+        dias: [...daysByDate.values()].sort(
+          (a, b) => a.fecha.localeCompare(b.fecha)
+        ),
+      } as CapacidadProduccion;
+
+      setCapacity({
+        data: merged,
+        loading: false,
+        error: null,
+      });
+
+      return merged;
+    },
+    []
+  );
+
+  useEffect(() => {
+    void refreshCatalog();
+
+    return () => {
+      runIdRef.current += 1;
+
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [refreshCatalog]);
+
+  const templates = catalog.templates;
+
+  const selectedTemplate = useMemo(
+    () => resolveTemplate(templates, input),
+    [templates, input]
+  );
+
+  const hours = useMemo<ProcessHours>(() => {
+    if (!selectedTemplate || catalog.loading || catalog.error) {
+      return {};
+    }
+
+    return estimateHours(input, [selectedTemplate]);
+  }, [input, selectedTemplate, catalog.loading, catalog.error]);
+
+  const baseHours = useMemo<ProcessHours>(() => {
+    if (!selectedTemplate || catalog.loading || catalog.error) {
+      return {};
+    }
+
+    return estimateHours(
+      { ...input, excluded: [] },
+      [selectedTemplate]
+    );
+  }, [input, selectedTemplate, catalog.loading, catalog.error]);
+
+  const inputKey = JSON.stringify(input);
+
+  const stale =
+    result !== null &&
+    simulatedInputKey !== inputKey;
+
+  const update = useCallback(
+    (patch: Partial<ContractInput>) => {
+      setInput((current) => ({ ...current, ...patch }));
+      setResult(null);
+      setSimulatedInputKey(null);
+      setSimulationError(null);
+    },
+    []
+  );
+
+  const load = useCallback(
+    (next: ContractInput) => {
+      cancelPendingRun();
+      setInput(next);
+      setResult(null);
+      setSimulatedInputKey(null);
+      setSimulationError(null);
+    },
+    [cancelPendingRun]
+  );
+
+  const runMany = useCallback(
+    (items: ContractInput[]) => {
+      cancelPendingRun();
+
+      setSimulationError(null);
+      setResult(null);
+      setSimulatedInputKey(null);
+
+      if (catalog.loading) {
+        setSimulationError(
+          'Espera a que termine de cargar el catÃ¡logo de Django.'
+        );
+        return;
+      }
+
+      if (!catalog.catalog || catalog.error || templates.length === 0) {
+        setSimulationError(
+          catalog.error ?? 'No hay un catÃ¡logo vÃ¡lido disponible.'
+        );
+        return;
+      }
+
+      if (items.length === 0) {
+        setSimulationError(
+          'Agrega al menos un vestido para simular.'
+        );
+        return;
+      }
+
+      for (const item of items) {
+        const error = validInput(item);
+
+        if (error) {
+          setSimulationError(error);
+          return;
+        }
+      }
+
+      const resolved = items.map((item) => {
+        const template = resolveTemplate(templates, item);
+
+        if (!template) return null;
+
+        return {
+          input: item,
+          template,
+          hours: estimateHours(item, [template]),
+        } satisfies ResolvedItem;
+      });
+
+      const missingIndex = resolved.findIndex(
+        (item) => item === null
+      );
+
+      if (missingIndex >= 0) {
+        setSimulationError(
+          `No se encontrÃ³ la ruta de "${items[missingIndex].corteId}" ` +
+          `para ${items[missingIndex].workshop}.`
+        );
+        return;
+      }
+
+      const validItems = resolved.filter(
+        (item): item is ResolvedItem => item !== null
+      );
+
+      const keyAtStart = JSON.stringify(
+        items.length === 1 ? items[0] : input
+      );
+
+      const currentRunId = runIdRef.current;
+      setSimulating(true);
+
+      timerRef.current = setTimeout(async () => {
+        try {
+          const range = capacityRange(items);
+
+          const capacityData = await fetchCapacityRange(
+            range.desde,
+            range.hasta
+          );
+
+          if (runIdRef.current !== currentRunId) return;
+
+          if (capacityData.dias.length === 0) {
+            throw new Error(
+              'Django no devolviÃ³ dÃ­as de capacidad para el periodo.'
+            );
+          }
+
+          const catalogData = catalog.catalog;
+
+          if (!catalogData || catalogData.trabajadoras.length === 0) {
+            throw new Error(
+              'No hay trabajadoras registradas en el catÃ¡logo de Django.'
+            );
+          }
+
+          const schedule = scheduleFromBackend(
+            validItems,
+            catalogData,
+            capacityData,
+            range.complete
+          );
+
+          const simulation = buildSimulationResult(
+            validItems,
+            schedule,
+            catalogData
+          );
+
+          if (runIdRef.current !== currentRunId) return;
+
+          setResult(simulation);
+          setSimulatedInputKey(keyAtStart);
+        } catch (error: unknown) {
+          if (runIdRef.current !== currentRunId) return;
+
+          console.error('Error al ejecutar la simulaciÃ³n:', error);
+
+          setResult(null);
+          setSimulatedInputKey(null);
+
+          setSimulationError(
+            error instanceof Error
+              ? error.message
+              : 'No se pudo completar la consulta de capacidad.'
+          );
+        } finally {
+          if (runIdRef.current === currentRunId) {
+            setSimulating(false);
+            timerRef.current = null;
+          }
+        }
+      }, 0);
+    },
+    [
+      cancelPendingRun,
+      catalog.loading,
+      catalog.error,
+      catalog.catalog,
+      templates,
+      fetchCapacityRange,
+      input,
+    ]
+  );
+
+  const run = useCallback(
+    (override?: ContractInput) => {
+      const target = override ?? input;
+
+      if (override) {
+        setInput(override);
+      }
+
+      runMany([target]);
+    },
+    [input, runMany]
+  );
+
+  return {
+    input,
+    update,
+    setInput,
+    hours,
+    baseHours,
+    result,
+    simulating,
+    stale,
+    run,
+    runMany,
+    load,
+    templates,
+
+    catalogError: catalog.error,
+    catalogLoaded: !catalog.loading && catalog.error === null,
+    catalogLoading: catalog.loading,
+    simulationError,
+    refreshCatalog,
+    selectedTemplate,
+
+    // InformaciÃ³n real procedente de Django.
+    catalogData: catalog.catalog,
+    backendWorkers: catalog.catalog?.trabajadoras ?? [],
+    backendDressTypes: catalog.catalog?.vestidos ?? [],
+    capacityData: capacity.data,
+    capacityLoading: capacity.loading,
+    capacityError: capacity.error,
+    refreshCapacity,
+
+    // Estas API no confirman la carga de todos los vestidos pendientes.
+    simulationIsDefinitive: false,
+  };
+}
+
