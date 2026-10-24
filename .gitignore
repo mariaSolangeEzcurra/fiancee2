@@ -5,3 +5,10 @@ backend/venv/
 backend/db.sqlite3
 .env
 **/.env
+
+# Archivos generados por Python
+__pycache__/
+*.py[cod]
+
+# Base de datos local
+backend/db.sqlite3
