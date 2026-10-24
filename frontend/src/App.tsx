@@ -25,9 +25,9 @@ import { Queue } from './pages/taller/Queue';
 import { Alerts } from './pages/taller/Alerts';
 
 import  MyDay  from './pages/trabajador/MyDay';
-import { LogHours } from './pages/trabajador/LogHours';
+import { MySchedule } from './pages/trabajador/MySchedule';
 import { MyDresses } from './pages/trabajador/MyDresses';
-import { MyNotes } from './pages/trabajador/MyNotes';
+import MyAttendance from './pages/trabajador/MyAttendance';
 
 import { Dashboard } from './pages/gerencia/Dashboard';
 import { Hours } from './pages/gerencia/Hours';
@@ -87,9 +87,14 @@ export function App() {
               }
             >
               <Route index element={<MyDay />} />
-              <Route path="registrar" element={<LogHours />} />
-              <Route path="vestidos" element={<MyDresses />} />
-              <Route path="observaciones" element={<MyNotes />} />
+              <Route path="horario" element={<MySchedule />} />
+
+              {/* Redirige la ruta antigua al horario */}
+              <Route
+                path="registrar"
+                element={<Navigate to="/trabajador/horario" replace />}
+              />
+              <Route path="asistencias" element={<MyAttendance />} />
             </Route>
 
             {/* GERENCIA */}

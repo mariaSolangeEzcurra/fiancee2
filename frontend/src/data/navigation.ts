@@ -47,9 +47,9 @@ export const navigation: Record<Role, NavItem[]> = {
 
   trabajador: [
   { label: 'Mi jornada', path: '/trabajador', icon: HomeIcon, end: true },
-  { label: 'Registrar horas', path: '/trabajador/registrar', icon: TimerIcon },
-  { label: 'Mis vestidos', path: '/trabajador/vestidos', icon: ShirtIcon },
-  { label: 'Mis observaciones', path: '/trabajador/observaciones', icon: NotebookPenIcon }],
+  { label: 'Mi horario', path: '/trabajador/horario', icon: CalendarRangeIcon, end: true },
+  { label: 'Mis asistencias', path: '/trabajador/asistencias', icon: ClockIcon, end: true },
+],
 
   gerencia: [
   { label: 'Dashboard', path: '/gerencia', icon: LayoutDashboardIcon, end: true },

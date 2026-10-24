@@ -1,5 +1,4 @@
-
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import {
   Link,
   NavLink,
@@ -28,12 +27,26 @@ interface SidebarProps {
 
 export function Sidebar({ role, onNavigate }: SidebarProps) {
   const { dresses, workers } = useApp();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
 
   const navigate = useNavigate();
   const location = useLocation();
 
   const profile = roleProfiles.find((r) => r.id === role);
+
+  // Datos de la persona que inició sesión.
+  const nombreUsuario =
+    user?.nombre?.trim() ||
+    user?.username?.trim() ||
+    profile?.person ||
+    'Usuario';
+
+  const inicialesUsuario = nombreUsuario
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((parte) => parte.charAt(0))
+    .join('')
+    .toUpperCase();
 
   const isPersonalActive =
     role === 'gerencia' &&
@@ -84,7 +97,7 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
               item.label === 'Personal'
             );
 
-          // Una sola entrada para todo el módulo de personal
+          // Una sola entrada para todo el módulo de personal.
           if (isPersonalItem) {
             return (
               <NavLink
@@ -112,7 +125,7 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
             );
           }
 
-          // Evita mostrar enlaces antiguos del mismo módulo
+          // Evita mostrar enlaces antiguos del mismo módulo.
           if (
             role === 'gerencia' &&
             item.path.startsWith('/gerencia/personal/')
@@ -156,23 +169,21 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
 
       {/* PERFIL Y CERRAR SESIÓN */}
       <div className="mt-6 border-t border-line pt-5">
-        {profile && (
-          <div className="flex items-center gap-3 px-2">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blush-soft text-xs font-semibold text-blush-deep">
-              {profile.initials}
-            </span>
+        <div className="flex items-center gap-3 px-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blush-soft text-xs font-semibold text-blush-deep">
+            {inicialesUsuario || profile?.initials || 'U'}
+          </span>
 
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-cocoa">
-                {profile.person}
-              </p>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-cocoa">
+              {nombreUsuario}
+            </p>
 
-              <p className="truncate text-xs text-cocoa-muted">
-                {profile.label}
-              </p>
-            </div>
+            <p className="truncate text-xs text-cocoa-muted">
+              {profile?.label ?? role}
+            </p>
           </div>
-        )}
+        </div>
 
         <button
           type="button"
@@ -186,3 +197,5 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
     </div>
   );
 }
+
+export default Sidebar;
