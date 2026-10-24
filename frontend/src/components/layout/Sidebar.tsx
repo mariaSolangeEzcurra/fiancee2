@@ -1,7 +1,16 @@
 
-import React, { useMemo } from 'react';
-import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { ArrowLeftRightIcon, LogOutIcon } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  Link,
+  NavLink,
+  useNavigate,
+  useLocation,
+} from 'react-router-dom';
+
+import {
+  LogOutIcon,
+  UsersIcon,
+} from 'lucide-react';
 
 import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -20,9 +29,15 @@ interface SidebarProps {
 export function Sidebar({ role, onNavigate }: SidebarProps) {
   const { dresses, workers } = useApp();
   const { logout } = useAuth();
+
   const navigate = useNavigate();
+  const location = useLocation();
 
   const profile = roleProfiles.find((r) => r.id === role);
+
+  const isPersonalActive =
+    role === 'gerencia' &&
+    location.pathname.startsWith('/gerencia/personal');
 
   const criticalCount = useMemo(
     () =>
@@ -40,7 +55,7 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
 
   return (
     <div className="flex h-full flex-col px-4 py-6">
-      {/* Marca */}
+      {/* MARCA */}
       <Link
         to="/"
         className="block px-3"
@@ -49,50 +64,97 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
         <span className="block font-display text-[2rem] font-semibold leading-none text-cocoa">
           Fiancée
         </span>
+
         <span className="mt-1.5 block text-[10px] font-semibold uppercase tracking-[0.28em] text-gold">
           Alta Costura · Arequipa
         </span>
       </Link>
 
-      {/* Navegación */}
+      {/* NAVEGACIÓN */}
       <nav
         aria-label="Menú principal"
-        className="mt-9 flex-1 space-y-0.5"
+        className="mt-9 min-h-0 flex-1 space-y-0.5 overflow-y-auto"
       >
-        {(navigation[role] ?? []).map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            end={item.end}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-150',
-                isActive
-                  ? 'bg-paper font-medium text-cocoa shadow-sm ring-1 ring-line'
-                  : 'text-cocoa-muted hover:bg-paper/70 hover:text-cocoa'
-              )
-            }
-          >
-            <item.icon
-              className="h-4 w-4 shrink-0"
-              aria-hidden="true"
-            />
+        {(navigation[role] ?? []).map((item) => {
+          const isPersonalItem =
+            role === 'gerencia' &&
+            (
+              item.path === '/gerencia/personal' ||
+              item.path === '/gerencia/personal/trabajadoras' ||
+              item.label === 'Personal'
+            );
 
-            <span className="flex-1 truncate">
-              {item.label}
-            </span>
+          // Una sola entrada para todo el módulo de personal
+          if (isPersonalItem) {
+            return (
+              <NavLink
+                key="gerencia-personal"
+                to="/gerencia/personal/trabajadoras"
+                onClick={onNavigate}
+                className={() =>
+                  cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-150',
+                    isPersonalActive
+                      ? 'bg-paper font-medium text-cocoa shadow-sm ring-1 ring-line'
+                      : 'text-cocoa-muted hover:bg-paper/70 hover:text-cocoa'
+                  )
+                }
+              >
+                <UsersIcon
+                  className="h-4 w-4 shrink-0"
+                  aria-hidden="true"
+                />
 
-            {item.label === 'Alertas' && criticalCount > 0 && (
-              <span className="tabular rounded-full bg-bad px-1.5 py-0.5 text-[10px] font-semibold text-ivory">
-                {criticalCount}
+                <span className="flex-1 truncate">
+                  Personal
+                </span>
+              </NavLink>
+            );
+          }
+
+          // Evita mostrar enlaces antiguos del mismo módulo
+          if (
+            role === 'gerencia' &&
+            item.path.startsWith('/gerencia/personal/')
+          ) {
+            return null;
+          }
+
+          return (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              end={item.end}
+              onClick={onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-150',
+                  isActive
+                    ? 'bg-paper font-medium text-cocoa shadow-sm ring-1 ring-line'
+                    : 'text-cocoa-muted hover:bg-paper/70 hover:text-cocoa'
+                )
+              }
+            >
+              <item.icon
+                className="h-4 w-4 shrink-0"
+                aria-hidden="true"
+              />
+
+              <span className="flex-1 truncate">
+                {item.label}
               </span>
-            )}
-          </NavLink>
-        ))}
+
+              {item.label === 'Alertas' && criticalCount > 0 && (
+                <span className="rounded-full bg-bad px-1.5 py-0.5 text-[10px] font-semibold text-ivory">
+                  {criticalCount}
+                </span>
+              )}
+            </NavLink>
+          );
+        })}
       </nav>
 
-      {/* Perfil y acciones */}
+      {/* PERFIL Y CERRAR SESIÓN */}
       <div className="mt-6 border-t border-line pt-5">
         {profile && (
           <div className="flex items-center gap-3 px-2">
@@ -104,6 +166,7 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
               <p className="truncate text-sm font-medium text-cocoa">
                 {profile.person}
               </p>
+
               <p className="truncate text-xs text-cocoa-muted">
                 {profile.label}
               </p>
@@ -111,17 +174,12 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
           </div>
         )}
 
-
-        {/* Cerrar sesión */}
         <button
           type="button"
           onClick={handleLogout}
-          className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-cocoa-muted transition-colors duration-150 hover:bg-red-50 hover:text-red-700"
+          className="mt-3 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-cocoa-muted transition-colors duration-150 hover:bg-red-50 hover:text-red-700"
         >
-          <LogOutIcon
-            className="h-4 w-4 shrink-0"
-            aria-hidden="true"
-          />
+          <LogOutIcon className="h-4 w-4 shrink-0" />
           Cerrar sesión
         </button>
       </div>

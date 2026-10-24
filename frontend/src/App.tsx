@@ -24,7 +24,7 @@ import { JefaHome } from './pages/taller/JefaHome';
 import { Queue } from './pages/taller/Queue';
 import { Alerts } from './pages/taller/Alerts';
 
-import { MyDay } from './pages/trabajador/MyDay';
+import  MyDay  from './pages/trabajador/MyDay';
 import { LogHours } from './pages/trabajador/LogHours';
 import { MyDresses } from './pages/trabajador/MyDresses';
 import { MyNotes } from './pages/trabajador/MyNotes';
@@ -32,6 +32,7 @@ import { MyNotes } from './pages/trabajador/MyNotes';
 import { Dashboard } from './pages/gerencia/Dashboard';
 import { Hours } from './pages/gerencia/Hours';
 import { Kpi } from './pages/gerencia/Kpi';
+import Trabajadoras from "./pages/gerencia/Trabajadoras";
 
 export function App() {
   return (
@@ -101,7 +102,18 @@ export function App() {
               }
             >
               <Route index element={<Dashboard />} />
-              <Route path="personal" element={<Staff />} />
+              
+              <Route path="personal">
+                <Route
+                  index
+                  element={<Navigate to="trabajadoras" replace />}
+                />
+                <Route
+                  path="trabajadoras"
+                  element={<Trabajadoras />}
+                />
+              </Route>
+
               <Route path="horas" element={<Hours />} />
               <Route path="produccion" element={<Dresses readOnly />} />
               <Route path="capacidad" element={<Capacity />} />
