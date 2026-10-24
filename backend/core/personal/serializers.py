@@ -1,7 +1,10 @@
 
 from decimal import Decimal
+from django.contrib.auth import get_user_model
 
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
 
 from core.models import (
     Trabajadora,
@@ -11,6 +14,7 @@ from core.models import (
     ReservaOperacion,
 )
 
+Usuario = get_user_model()
 
 class OperacionSerializer(serializers.ModelSerializer):
     area_nombre = serializers.CharField(
@@ -123,6 +127,24 @@ class TrabajadoraSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
+    # Datos de acceso: se reciben en POST/PATCH/PUT.
+    username = serializers.CharField(
+        required=False,
+        trim_whitespace=True,
+    )
+
+    email = serializers.EmailField(
+        required=False,
+        allow_blank=False,
+    )
+
+    password = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )
+
     class Meta:
         model = Trabajadora
         fields = [
@@ -135,15 +157,174 @@ class TrabajadoraSerializer(serializers.ModelSerializer):
             "habilidades",
             "habilidades_detalle",
             "horarios",
+            "username",
+            "email",
+            "password",
         ]
 
-    def validate_nombre(self, value):
+    def to_representation(self, instance):
+        """
+        Incluye username y email del usuario relacionado en las
+        respuestas GET, sin modificar los campos de entrada.
+        """
+        data = super().to_representation(instance)
+
+        usuario = getattr(instance, "usuario", None)
+
+        data["username"] = usuario.username if usuario else None
+        data["email"] = usuario.email if usuario else None
+
+        return data
+
+    def validate_username(self, value):
         value = value.strip()
+
         if not value:
             raise serializers.ValidationError(
-                "El nombre es obligatorio."
+                "El nombre de usuario no puede estar vacío."
             )
+
+        usuarios = Usuario.objects.filter(username__iexact=value)
+
+        if self.instance and self.instance.usuario_id:
+            usuarios = usuarios.exclude(
+                pk=self.instance.usuario_id
+            )
+
+        if usuarios.exists():
+            raise serializers.ValidationError(
+                "Este nombre de usuario ya está registrado."
+            )
+
         return value
+
+    def validate_email(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "El correo electrónico no puede estar vacío."
+            )
+
+        usuarios = Usuario.objects.filter(email__iexact=value)
+
+        if self.instance and self.instance.usuario_id:
+            usuarios = usuarios.exclude(
+                pk=self.instance.usuario_id
+            )
+
+        if usuarios.exists():
+            raise serializers.ValidationError(
+                "Este correo electrónico ya está registrado."
+            )
+
+        return value
+
+    def validate(self, attrs):
+        # Para crear una trabajadora, se requieren sus credenciales.
+        if self.instance is None:
+            campos_requeridos = ["username", "email", "password"]
+
+            for campo in campos_requeridos:
+                if not attrs.get(campo):
+                    raise serializers.ValidationError({
+                        campo: "Este campo es obligatorio."
+                    })
+
+        # Si no tiene un usuario asociado, debe proporcionar
+        # todas las credenciales para crear uno.
+        elif self.instance.usuario_id is None:
+            campos_credenciales = ["username", "email", "password"]
+
+            if any(campo in attrs for campo in campos_credenciales):
+                for campo in campos_credenciales:
+                    if not attrs.get(campo):
+                        raise serializers.ValidationError({
+                            campo: (
+                                "Este campo es obligatorio para "
+                                "crear el usuario asociado."
+                            )
+                        })
+
+        password = attrs.get("password", "")
+
+        if password and len(password) < 8:
+            raise serializers.ValidationError({
+                "password": (
+                    "La contraseña debe tener al menos 8 caracteres."
+                )
+            })
+
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        username = validated_data.pop("username")
+        email = validated_data.pop("email")
+        password = validated_data.pop("password")
+
+        habilidades = validated_data.pop("habilidades", [])
+
+        usuario = Usuario.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            rol="taller",
+        )
+
+        trabajadora = Trabajadora.objects.create(
+            usuario=usuario,
+            **validated_data,
+        )
+
+        trabajadora.habilidades.set(habilidades)
+
+        return trabajadora
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        username = validated_data.pop("username", None)
+        email = validated_data.pop("email", None)
+        password = validated_data.pop("password", "")
+
+        habilidades = validated_data.pop("habilidades", None)
+
+        usuario = instance.usuario
+
+        if usuario is not None:
+            if username is not None:
+                usuario.username = username
+
+            if email is not None:
+                usuario.email = email
+
+            if password:
+                usuario.set_password(password)
+
+            if (
+                username is not None
+                or email is not None
+                or password
+            ):
+                usuario.save()
+
+        elif username is not None and email is not None and password:
+            usuario = Usuario.objects.create_user(
+                username=username,
+                email=email,
+                password=password,
+                rol="taller",
+            )
+
+            instance.usuario = usuario
+            instance.save(update_fields=["usuario"])
+
+        instance = super().update(instance, validated_data)
+
+        if habilidades is not None:
+            instance.habilidades.set(habilidades)
+
+        return instance
 
 
 class ReservaPersonalSerializer(serializers.ModelSerializer):

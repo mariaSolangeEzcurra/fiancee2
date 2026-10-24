@@ -59,6 +59,8 @@ export interface Trabajadora {
   habilidades: number[];
   habilidades_detalle?: Operacion[];
   horarios?: Horario[];
+  username: string;
+  email: string;
 }
 
 export interface FormTrabajadora {
@@ -67,6 +69,9 @@ export interface FormTrabajadora {
   activa: boolean;
   observaciones: string;
   habilidades: number[];
+  username: string;
+  email: string;
+  password: string;
 }
 
 export interface Horario {
@@ -141,7 +146,18 @@ interface RespuestaHorario {
   trabajadora?: number;
   nombre?: string;
   mensaje?: string;
-  horarios: Horario[];
+  horarios?: Horario[];
+}
+
+interface PayloadTrabajadora {
+  nombre: string;
+  area: string;
+  activa: boolean;
+  observaciones: string;
+  habilidades: number[];
+  username: string;
+  email: string;
+  password?: string;
 }
 
 const formularioInicial = (): FormTrabajadora => ({
@@ -150,6 +166,9 @@ const formularioInicial = (): FormTrabajadora => ({
   activa: true,
   observaciones: "",
   habilidades: [],
+  username: "",
+  email: "",
+  password: "",
 });
 
 const ausenciaInicial = (): FormAusencia => ({
@@ -187,16 +206,22 @@ function obtenerError(data: unknown, status: number): string {
 }
 
 function convertirLista<T>(
-  data: T[] | ListaPaginada<T>
+  data: T[] | ListaPaginada<T> | null | undefined
 ): T[] {
   if (Array.isArray(data)) return data;
-  return Array.isArray(data?.results) ? data.results : [];
+
+  if (data && Array.isArray(data.results)) {
+    return data.results;
+  }
+
+  return [];
 }
 
 export function formatoHoras(
   value: number | string | null | undefined
 ): string {
   const number = Number(value ?? 0);
+
   return Number.isFinite(number) ? number.toFixed(2) : "0.00";
 }
 
@@ -217,9 +242,10 @@ export function useTrabajadoras() {
   const { accessToken } = useAuth();
 
   const [people, setPeople] = useState<Trabajadora[]>([]);
+
   const [options, setOptions] = useState<Opciones>({
     areas: [],
-    dias: [],
+    dias: DIAS.map((nombre, valor) => ({ valor, nombre })),
     operaciones: [],
   });
 
@@ -252,6 +278,7 @@ export function useTrabajadoras() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  // Petición autenticada a Django REST Framework.
   const request = useCallback(
     async <T,>(
       path: string,
@@ -266,17 +293,20 @@ export function useTrabajadoras() {
       let response: Response;
 
       try {
-        response = await fetch(`${API}/${path.replace(/^\/+/, "")}`, {
-          ...config,
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${accessToken}`,
-            ...(config.body !== undefined
-              ? { "Content-Type": "application/json" }
-              : {}),
-            ...config.headers,
-          },
-        });
+        response = await fetch(
+          `${API}/${path.replace(/^\/+/, "")}`,
+          {
+            ...config,
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${accessToken}`,
+              ...(config.body !== undefined
+                ? { "Content-Type": "application/json" }
+                : {}),
+              ...config.headers,
+            },
+          }
+        );
       } catch {
         throw new Error(
           "No se pudo conectar con Django. Verifica el servidor y la URL de la API."
@@ -327,21 +357,47 @@ export function useTrabajadoras() {
     [request]
   );
 
+  // Cargar operaciones desde el endpoint confirmado.
+  const loadOperations = useCallback(async (): Promise<boolean> => {
+    try {
+      const operaciones = await requestList<Operacion>("operaciones/");
+
+      setOptions((current) => ({
+        ...current,
+        operaciones,
+      }));
+
+      return true;
+    } catch (err) {
+      setError((err as Error).message);
+      return false;
+    }
+  }, [requestList]);
+
+  // Cargar trabajadoras, opciones y operaciones.
   const load = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     setError("");
 
     try {
-      const [trabajadoras, opciones] = await Promise.all([
+      const [trabajadoras, opciones, operaciones] = await Promise.all([
         requestList<Trabajadora>("trabajadoras/"),
-        request<Opciones>("trabajadoras/opciones/"),
+        request<Partial<Opciones>>("trabajadoras/opciones/"),
+        requestList<Operacion>("operaciones/"),
       ]);
 
       setPeople(trabajadoras);
+
       setOptions({
         areas: opciones.areas ?? [],
-        dias: opciones.dias ?? [],
-        operaciones: opciones.operaciones ?? [],
+        dias:
+          opciones.dias?.length
+            ? opciones.dias
+            : DIAS.map((nombre, valor) => ({ valor, nombre })),
+        operaciones:
+          operaciones.length > 0
+            ? operaciones
+            : opciones.operaciones ?? [],
       });
 
       return true;
@@ -357,11 +413,15 @@ export function useTrabajadoras() {
     void load();
   }, [load]);
 
+  // Búsqueda por nombre, usuario o correo.
   const filtered = useMemo(() => {
     return people.filter((p) => {
-      const matchesName = p.nombre
-        .toLocaleLowerCase()
-        .includes(search.trim().toLocaleLowerCase());
+      const term = search.trim().toLocaleLowerCase();
+
+      const matchesName =
+        p.nombre.toLocaleLowerCase().includes(term) ||
+        (p.username ?? "").toLocaleLowerCase().includes(term) ||
+        (p.email ?? "").toLocaleLowerCase().includes(term);
 
       const matchesArea = !area || p.area === area;
       const matchesStatus = !status || String(p.activa) === status;
@@ -378,44 +438,52 @@ export function useTrabajadoras() {
   const areaName = useCallback(
     (code: string) =>
       options.areas.find((item) => item.valor === code)?.nombre ||
+      people.find((item) => item.area === code)?.area_nombre ||
       code ||
       "Sin área",
-    [options.areas]
+    [options.areas, people]
   );
 
-  const clearMessages = () => {
+  const clearMessages = useCallback(() => {
     setError("");
     setNotice("");
-  };
+  }, []);
 
-  const startNew = () => {
+  const startNew = useCallback(() => {
     setPerson(null);
     setEditing(false);
     setForm(formularioInicial());
     clearMessages();
-  };
+  }, [clearMessages]);
 
-  const edit = (worker: Trabajadora) => {
-    setPerson(worker);
-    setEditing(true);
-    clearMessages();
+  const edit = useCallback(
+    (worker: Trabajadora) => {
+      setPerson(worker);
+      setEditing(true);
+      clearMessages();
 
-    setForm({
-      nombre: worker.nombre,
-      area: worker.area,
-      activa: worker.activa,
-      observaciones: worker.observaciones ?? "",
-      habilidades: (worker.habilidades ?? []).map(Number),
-    });
-  };
+      setForm({
+        nombre: worker.nombre ?? "",
+        area: worker.area ?? "",
+        activa: worker.activa,
+        observaciones: worker.observaciones ?? "",
+        habilidades: (worker.habilidades ?? []).map(Number),
+        username: worker.username ?? "",
+        email: worker.email ?? "",
+        password: "",
+      });
+    },
+    [clearMessages]
+  );
 
-  const cancelEdit = () => {
+  const cancelEdit = useCallback(() => {
     setPerson(null);
     setEditing(false);
     setForm(formularioInicial());
     clearMessages();
-  };
+  }, [clearMessages]);
 
+  // Crear o actualizar una trabajadora.
   const savePerson = async (
     event: FormEvent<HTMLFormElement>
   ): Promise<boolean> => {
@@ -432,10 +500,56 @@ export function useTrabajadoras() {
       return false;
     }
 
+    if (!form.username.trim()) {
+      setError("Escribe el nombre de usuario.");
+      return false;
+    }
+
+    if (!form.email.trim()) {
+      setError("Escribe el correo electrónico.");
+      return false;
+    }
+
+    const emailValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+      form.email.trim()
+    );
+
+    if (!emailValido) {
+      setError("Escribe un correo electrónico válido.");
+      return false;
+    }
+
+    const isEditing = editing && person !== null;
+
+    if (!isEditing && !form.password) {
+      setError("Escribe una contraseña para la cuenta.");
+      return false;
+    }
+
+    if (form.password && form.password.length < 8) {
+      setError("La contraseña debe tener al menos 8 caracteres.");
+      return false;
+    }
+
+    const payload: PayloadTrabajadora = {
+      nombre: form.nombre.trim(),
+      area: form.area,
+      activa: form.activa,
+      observaciones: form.observaciones.trim(),
+      // Solo se envían IDs de operaciones seleccionadas.
+      habilidades: form.habilidades.map(Number).filter(Number.isFinite),
+      username: form.username.trim(),
+      email: form.email.trim(),
+    };
+
+    // La contraseña se envía solo si se escribió.
+    if (form.password) {
+      payload.password = form.password;
+    }
+
     setSaving(true);
 
     try {
-      const isEditing = editing && person !== null;
       const endpoint =
         isEditing && person
           ? `trabajadoras/${person.id}/`
@@ -443,30 +557,22 @@ export function useTrabajadoras() {
 
       await request<Trabajadora>(endpoint, {
         method: isEditing ? "PATCH" : "POST",
-        body: JSON.stringify({
-          nombre: form.nombre.trim(),
-          area: form.area,
-          activa: form.activa,
-          observaciones: form.observaciones.trim(),
-          habilidades: form.habilidades,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const refreshed = await load();
 
+      setPerson(null);
+      setEditing(false);
+      setForm(formularioInicial());
+
       setNotice(
-        isEditing
-          ? "Los datos de la trabajadora se actualizaron."
-          : "La trabajadora se registró correctamente."
+        refreshed
+          ? isEditing
+            ? "Los datos de la trabajadora se actualizaron."
+            : "La trabajadora y su cuenta se registraron correctamente."
+          : "Se guardó correctamente, pero no se pudo actualizar el listado."
       );
-
-      cancelEdit();
-
-      if (!refreshed) {
-        setNotice(
-          "Se guardó correctamente, pero no se pudo actualizar el listado."
-        );
-      }
 
       return true;
     } catch (err) {
@@ -477,6 +583,7 @@ export function useTrabajadoras() {
     }
   };
 
+  // Activar o desactivar sin eliminar el historial.
   const toggleActive = async (
     worker: Trabajadora
   ): Promise<boolean> => {
@@ -493,7 +600,9 @@ export function useTrabajadoras() {
 
       setPeople((current) =>
         current.map((item) =>
-          item.id === worker.id ? updated : item
+          item.id === worker.id
+            ? { ...item, ...updated }
+            : item
         )
       );
 
@@ -510,16 +619,20 @@ export function useTrabajadoras() {
     }
   };
 
-  const selectPerson = (worker: Trabajadora | null) => {
-    setPerson(worker);
-    setCapacity(null);
-    setReservations([]);
-    setAbsences([]);
-    setHours(Array(7).fill("0"));
-    setAbsence(ausenciaInicial());
-    clearMessages();
-  };
+  const selectPerson = useCallback(
+    (worker: Trabajadora | null) => {
+      setPerson(worker);
+      setCapacity(null);
+      setReservations([]);
+      setAbsences([]);
+      setHours(Array(7).fill("0"));
+      setAbsence(ausenciaInicial());
+      clearMessages();
+    },
+    [clearMessages]
+  );
 
+  // Consultar horario semanal.
   const loadHours = async (
     worker: Trabajadora
   ): Promise<boolean> => {
@@ -527,13 +640,17 @@ export function useTrabajadoras() {
     clearMessages();
 
     try {
-      const data = await request<RespuestaHorario>(
-        `trabajadoras/${worker.id}/horarios/`
-      );
+      const data = await request<
+        RespuestaHorario | Horario[]
+      >(`trabajadoras/${worker.id}/horarios/`);
+
+      const horarioLista = Array.isArray(data)
+        ? data
+        : data.horarios ?? [];
 
       const nextHours = Array<string>(7).fill("0");
 
-      for (const item of data.horarios ?? []) {
+      for (const item of horarioLista) {
         const day = Number(item.dia_semana);
 
         if (day >= 0 && day <= 6) {
@@ -551,6 +668,8 @@ export function useTrabajadoras() {
     }
   };
 
+  // Guardar horario semanal.
+  // El formato { horarios: [...] } debe coincidir con el serializer de Django.
   const saveHours = async (
     event: FormEvent<HTMLFormElement>
   ): Promise<boolean> => {
@@ -564,7 +683,11 @@ export function useTrabajadoras() {
 
     const invalid = hours.some((value) => {
       const number = Number(value);
-      return !Number.isFinite(number) || number < 0 || number > 24;
+      return (
+        !Number.isFinite(number) ||
+        number < 0 ||
+        number > 24
+      );
     });
 
     if (invalid) {
@@ -575,32 +698,40 @@ export function useTrabajadoras() {
     setSaving(true);
 
     try {
-      const response = await request<RespuestaHorario>(
-        `trabajadoras/${person.id}/horarios/`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            horarios: hours.map((value, dia_semana) => ({
-              dia_semana,
-              horas_disponibles: value,
-            })),
-          }),
-        }
-      );
+      const response = await request<
+        RespuestaHorario | Horario[]
+      >(`trabajadoras/${person.id}/horarios/`, {
+        method: "PUT",
+        body: JSON.stringify({
+          horarios: hours.map((value, dia_semana) => ({
+            dia_semana,
+            horas_disponibles: value,
+          })),
+        }),
+      });
 
-      const nextHours = Array<string>(7).fill("0");
+      const horarioLista = Array.isArray(response)
+        ? response
+        : response.horarios ?? [];
 
-      for (const item of response.horarios ?? []) {
-        if (item.dia_semana >= 0 && item.dia_semana <= 6) {
-          nextHours[item.dia_semana] = String(
-            item.horas_disponibles
-          );
+      if (horarioLista.length > 0) {
+        const nextHours = Array<string>(7).fill("0");
+
+        for (const item of horarioLista) {
+          if (item.dia_semana >= 0 && item.dia_semana <= 6) {
+            nextHours[item.dia_semana] = String(
+              item.horas_disponibles
+            );
+          }
         }
+
+        setHours(nextHours);
       }
 
-      setHours(nextHours);
       setNotice(
-        response.mensaje ?? "Horario guardado correctamente."
+        !Array.isArray(response) && response.mensaje
+          ? response.mensaje
+          : "Horario guardado correctamente."
       );
 
       return true;
@@ -612,6 +743,7 @@ export function useTrabajadoras() {
     }
   };
 
+  // Consultar ausencias específicas de una trabajadora.
   const loadAbsences = async (
     worker: Trabajadora
   ): Promise<boolean> => {
@@ -633,6 +765,7 @@ export function useTrabajadoras() {
     }
   };
 
+  // Registrar una ausencia.
   const saveAbsence = async (
     event: FormEvent<HTMLFormElement>
   ): Promise<boolean> => {
@@ -695,6 +828,38 @@ export function useTrabajadoras() {
     }
   };
 
+  // Editar una ausencia existente.
+  const updateAbsence = async (
+    id: number,
+    data: Partial<FormAusencia>
+  ): Promise<boolean> => {
+    clearMessages();
+
+    try {
+      await request<Ausencia>(`ausencias/${id}/`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+
+      if (person) {
+        const updated = await requestList<Ausencia>(
+          `trabajadoras/${person.id}/ausencias/`
+        );
+        setAbsences(updated);
+      } else {
+        const updated = await requestList<Ausencia>("ausencias/");
+        setAbsences(updated);
+      }
+
+      setNotice("Ausencia actualizada correctamente.");
+      return true;
+    } catch (err) {
+      setError((err as Error).message);
+      return false;
+    }
+  };
+
+  // Eliminar ausencia.
   const deleteAbsence = async (
     id: number
   ): Promise<boolean> => {
@@ -717,6 +882,7 @@ export function useTrabajadoras() {
     }
   };
 
+  // Consultar capacidad semanal y reservas.
   const loadCapacity = async (
     worker: Trabajadora,
     date: string = week
@@ -735,6 +901,7 @@ export function useTrabajadoras() {
       ]);
 
       setCapacity(capacityData);
+
       setReservations(
         reservationsData.filter((reservation) => {
           if (!reservation.fecha) return true;
@@ -755,8 +922,10 @@ export function useTrabajadoras() {
     }
   };
 
+  // Consultar todas las ausencias del taller.
   const loadAllAbsences = async (): Promise<Ausencia[]> => {
     const data = await requestList<Ausencia>("ausencias/");
+    setAbsences(data);
     return data;
   };
 
@@ -793,6 +962,7 @@ export function useTrabajadoras() {
     totalActive,
     areaName,
     load,
+    loadOperations,
     loadHours,
     loadAbsences,
     loadCapacity,
@@ -805,6 +975,7 @@ export function useTrabajadoras() {
     selectPerson,
     saveHours,
     saveAbsence,
+    updateAbsence,
     deleteAbsence,
   };
 }

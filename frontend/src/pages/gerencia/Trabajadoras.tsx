@@ -1,4 +1,3 @@
-
 import {
   useEffect,
   useState,
@@ -10,7 +9,6 @@ import {
   CalendarClock,
   CalendarOff,
   Check,
-  ChevronDown,
   Clock3,
   FileText,
   Filter,
@@ -36,7 +34,7 @@ const primaryButton =
   "inline-flex items-center justify-center gap-2 rounded-xl bg-[#49372D] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#624B3D] disabled:cursor-not-allowed disabled:opacity-50";
 
 const secondaryButton =
-  "inline-flex items-center justify-center gap-2 rounded-xl border border-[#E8DFD8] bg-white px-3.5 py-2.5 text-sm font-medium text-[#59463A] transition hover:bg-[#FAF6F2] disabled:opacity-50";
+  "inline-flex items-center justify-center gap-2 rounded-xl border border-[#E8DFD8] bg-white px-3.5 py-2.5 text-sm font-medium text-[#59463A] transition hover:bg-[#FAF6F2] disabled:cursor-not-allowed disabled:opacity-50";
 
 const cardClass =
   "rounded-2xl border border-[#EDE5DF] bg-white p-4 shadow-[0_2px_12px_rgba(60,40,25,0.025)] sm:p-5";
@@ -115,6 +113,7 @@ function Modal({
             >
               {title}
             </h2>
+
             {description && (
               <p className="mt-1 text-sm text-[#928176]">
                 {description}
@@ -148,6 +147,7 @@ function Notice({
   onDismiss: () => void;
 }) {
   const message = error || notice;
+
   if (!message) return null;
 
   return (
@@ -159,7 +159,8 @@ function Notice({
           : "border-emerald-200 bg-emerald-50 text-emerald-800"
       }`}
     >
-      <span>{message}</span>
+      <span className="break-words">{message}</span>
+
       <button
         type="button"
         onClick={onDismiss}
@@ -186,13 +187,14 @@ function StatCard({
   return (
     <div className={cardClass}>
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm text-[#928176]">{label}</p>
           <p className="mt-2 font-display text-2xl font-semibold text-[#44352D] sm:text-3xl">
             {value}
           </p>
           <p className="mt-1 text-xs text-[#A2958B]">{detail}</p>
         </div>
+
         <div className="rounded-xl bg-[#F8F0E9] p-2.5 text-[#99704F]">
           <Icon size={19} />
         </div>
@@ -254,7 +256,10 @@ export default function Trabajadoras() {
 
   const changeAbsencePerson = async (id: string) => {
     setAbsencePersonId(id);
-    const worker = t.people.find((item) => item.id === Number(id));
+
+    const worker = t.people.find(
+      (item) => item.id === Number(id)
+    );
 
     t.selectPerson(worker ?? null);
 
@@ -265,7 +270,11 @@ export default function Trabajadoras() {
 
   const changeCapacityPerson = (id: string) => {
     setCapacityPersonId(id);
-    const worker = t.people.find((item) => item.id === Number(id));
+
+    const worker = t.people.find(
+      (item) => item.id === Number(id)
+    );
+
     t.selectPerson(worker ?? null);
   };
 
@@ -283,7 +292,9 @@ export default function Trabajadoras() {
     await t.loadCapacity(worker, t.week);
   };
 
-  const submitPerson = async (event: FormEvent<HTMLFormElement>) => {
+  const submitPerson = async (
+    event: FormEvent<HTMLFormElement>
+  ) => {
     const success = await t.savePerson(event);
 
     if (success) {
@@ -291,7 +302,9 @@ export default function Trabajadoras() {
     }
   };
 
-  const submitHours = async (event: FormEvent<HTMLFormElement>) => {
+  const submitHours = async (
+    event: FormEvent<HTMLFormElement>
+  ) => {
     const success = await t.saveHours(event);
 
     if (success) {
@@ -299,31 +312,31 @@ export default function Trabajadoras() {
     }
   };
 
-  const submitAbsence = async (event: FormEvent<HTMLFormElement>) => {
-    const success = await t.saveAbsence(event);
-
-    if (success) {
-      // El modal permanece abierto para poder registrar otra ausencia.
-    }
+  const submitAbsence = async (
+    event: FormEvent<HTMLFormElement>
+  ) => {
+    await t.saveAbsence(event);
   };
 
   const handleDeleteAbsence = async (id: number) => {
     if (!window.confirm("¿Deseas eliminar esta ausencia?")) return;
+
     await t.deleteAbsence(id);
   };
 
   return (
     <main className="min-h-full space-y-5 bg-[#FCFAF7] p-3 text-[#44352D] sm:space-y-6 sm:p-6 lg:p-8">
       {/* ENCABEZADO */}
-
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#B18A6A]">
             Gerencia / Personal
           </p>
+
           <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
             Equipo del taller
           </h1>
+
           <p className="mt-1 text-sm text-[#928176]">
             Organiza al equipo, sus horarios y su disponibilidad.
           </p>
@@ -349,7 +362,6 @@ export default function Trabajadoras() {
       />
 
       {/* RESUMEN */}
-
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Personal registrado"
@@ -357,18 +369,21 @@ export default function Trabajadoras() {
           detail="Total de trabajadoras"
           icon={Users}
         />
+
         <StatCard
           label="Activas"
           value={t.totalActive}
           detail="Disponibles en el equipo"
           icon={Check}
         />
+
         <StatCard
           label="Inactivas"
           value={t.people.length - t.totalActive}
           detail="Fuera del equipo activo"
           icon={Users}
         />
+
         <StatCard
           label="Áreas"
           value={t.options.areas.length}
@@ -378,7 +393,6 @@ export default function Trabajadoras() {
       </section>
 
       {/* NAVEGACIÓN */}
-
       <nav className="flex gap-1 overflow-x-auto rounded-2xl border border-[#EDE5DF] bg-white p-1.5">
         {tabs.map((tab) => {
           const Icon = tab.icon;
@@ -403,7 +417,6 @@ export default function Trabajadoras() {
       </nav>
 
       {/* VISTA: PERSONAL */}
-
       {view === "trabajadoras" && (
         <section className={cardClass}>
           <div className="mb-5 flex flex-col gap-3 xl:flex-row xl:items-center">
@@ -421,12 +434,15 @@ export default function Trabajadoras() {
                 size={16}
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A99B91]"
               />
+
               <input
                 className={`${inputClass} pl-9`}
-                placeholder="Buscar por nombre..."
+                placeholder="Buscar nombre, usuario o correo..."
                 aria-label="Buscar trabajadora"
                 value={t.search}
-                onChange={(event) => t.setSearch(event.target.value)}
+                onChange={(event) =>
+                  t.setSearch(event.target.value)
+                }
               />
             </div>
 
@@ -466,18 +482,22 @@ export default function Trabajadoras() {
             </EmptyState>
           ) : (
             <>
-              {/* TABLA PARA PANTALLAS MEDIANAS Y GRANDES */}
-
+              {/* TABLA DESKTOP */}
               <div className="hidden overflow-x-auto md:block">
                 <table className="w-full min-w-[680px] border-collapse text-left">
                   <thead>
                     <tr className="border-b border-[#EDE5DF] text-[11px] uppercase tracking-wider text-[#A2958B]">
-                      <th className="px-3 py-3 font-medium">Trabajadora</th>
+                      <th className="px-3 py-3 font-medium">
+                        Trabajadora
+                      </th>
                       <th className="px-3 py-3 font-medium">Área</th>
                       <th className="px-3 py-3 font-medium">Estado</th>
-                      <th className="px-3 py-3 text-right font-medium">Acciones</th>
+                      <th className="px-3 py-3 text-right font-medium">
+                        Acciones
+                      </th>
                     </tr>
                   </thead>
+
                   <tbody>
                     {t.filtered.map((worker) => (
                       <tr
@@ -495,9 +515,14 @@ export default function Trabajadoras() {
                                 .join("")
                                 .toUpperCase()}
                             </div>
-                            <div>
+
+                            <div className="min-w-0">
                               <p className="text-sm font-medium">
                                 {worker.nombre}
+                              </p>
+                              <p className="mt-0.5 break-all text-xs text-[#A2958B]">
+                                @{worker.username || "sin usuario"}
+                                {worker.email ? ` · ${worker.email}` : ""}
                               </p>
                               <p className="mt-0.5 text-xs text-[#A2958B]">
                                 {worker.habilidades?.length ?? 0} habilidades
@@ -507,7 +532,8 @@ export default function Trabajadoras() {
                         </td>
 
                         <td className="px-3 py-4 text-sm text-[#79685D]">
-                          {worker.area_nombre || t.areaName(worker.area)}
+                          {worker.area_nombre ||
+                            t.areaName(worker.area)}
                         </td>
 
                         <td className="px-3 py-4">
@@ -520,7 +546,9 @@ export default function Trabajadoras() {
                           >
                             <span
                               className={`h-1.5 w-1.5 rounded-full ${
-                                worker.activa ? "bg-[#5D9A6A]" : "bg-[#A99B91]"
+                                worker.activa
+                                  ? "bg-[#5D9A6A]"
+                                  : "bg-[#A99B91]"
                               }`}
                             />
                             {worker.activa ? "Activa" : "Inactiva"}
@@ -542,6 +570,7 @@ export default function Trabajadoras() {
                             <button
                               type="button"
                               title="Horario"
+                              aria-label={`Editar horario de ${worker.nombre}`}
                               onClick={() => void openHours(worker)}
                               className="rounded-lg p-2 text-[#79685D] hover:bg-[#F4E8DD] hover:text-[#49372D]"
                             >
@@ -551,6 +580,7 @@ export default function Trabajadoras() {
                             <button
                               type="button"
                               title="Ausencias"
+                              aria-label={`Gestionar ausencias de ${worker.nombre}`}
                               onClick={() => void openAbsences(worker)}
                               className="rounded-lg p-2 text-[#79685D] hover:bg-[#F4E8DD] hover:text-[#49372D]"
                             >
@@ -560,6 +590,7 @@ export default function Trabajadoras() {
                             <button
                               type="button"
                               title={worker.activa ? "Desactivar" : "Activar"}
+                              aria-label={`${worker.activa ? "Desactivar" : "Activar"} ${worker.nombre}`}
                               onClick={() => void t.toggleActive(worker)}
                               className="rounded-lg p-2 text-[#79685D] hover:bg-[#F4E8DD] hover:text-[#49372D]"
                             >
@@ -577,8 +608,7 @@ export default function Trabajadoras() {
                 </table>
               </div>
 
-              {/* TARJETAS PARA CELULARES */}
-
+              {/* TARJETAS MÓVILES */}
               <div className="grid gap-3 md:hidden">
                 {t.filtered.map((worker) => (
                   <article
@@ -601,8 +631,18 @@ export default function Trabajadoras() {
                           {worker.nombre}
                         </p>
                         <p className="mt-1 text-xs text-[#928176]">
-                          {worker.area_nombre || t.areaName(worker.area)}
+                          {worker.area_nombre ||
+                            t.areaName(worker.area)}
                         </p>
+                        <p className="mt-1 break-all text-xs text-[#928176]">
+                          @{worker.username || "sin usuario"}
+                        </p>
+                        {worker.email && (
+                          <p className="mt-1 break-all text-xs text-[#928176]">
+                            {worker.email}
+                          </p>
+                        )}
+
                         <span
                           className={`mt-2 inline-flex rounded-full px-2 py-1 text-[11px] font-medium ${
                             worker.activa
@@ -624,6 +664,7 @@ export default function Trabajadoras() {
                         <Pencil size={16} />
                         Editar
                       </button>
+
                       <button
                         type="button"
                         onClick={() => void openHours(worker)}
@@ -632,6 +673,7 @@ export default function Trabajadoras() {
                         <Clock3 size={16} />
                         Horario
                       </button>
+
                       <button
                         type="button"
                         onClick={() => void openAbsences(worker)}
@@ -640,12 +682,17 @@ export default function Trabajadoras() {
                         <CalendarOff size={16} />
                         Ausencias
                       </button>
+
                       <button
                         type="button"
                         onClick={() => void t.toggleActive(worker)}
                         className="flex flex-col items-center gap-1 rounded-lg py-2 text-[11px] text-[#79685D] hover:bg-[#FAF6F2]"
                       >
-                        {worker.activa ? <X size={16} /> : <Check size={16} />}
+                        {worker.activa ? (
+                          <X size={16} />
+                        ) : (
+                          <Check size={16} />
+                        )}
                         {worker.activa ? "Desactivar" : "Activar"}
                       </button>
                     </div>
@@ -658,7 +705,6 @@ export default function Trabajadoras() {
       )}
 
       {/* VISTA: ÁREAS Y HABILIDADES */}
-
       {view === "habilidades" && (
         <section className={cardClass}>
           <div className="mb-5">
@@ -676,7 +722,8 @@ export default function Trabajadoras() {
             <div className="grid gap-3 lg:grid-cols-2">
               {t.options.areas.map((item) => {
                 const operations = t.options.operaciones.filter(
-                  (operation) => operation.area_responsable === item.valor
+                  (operation) =>
+                    operation.area_responsable === item.valor
                 );
 
                 const count = t.people.filter(
@@ -692,9 +739,13 @@ export default function Trabajadoras() {
                       <div>
                         <h3 className="font-medium">{item.nombre}</h3>
                         <p className="mt-1 text-xs text-[#928176]">
-                          {count} {count === 1 ? "trabajadora" : "trabajadoras"}
+                          {count}{" "}
+                          {count === 1
+                            ? "trabajadora"
+                            : "trabajadoras"}
                         </p>
                       </div>
+
                       <span className="rounded-lg bg-[#F8F0E9] px-2.5 py-1 text-xs text-[#99704F]">
                         {operations.length} operaciones
                       </span>
@@ -713,7 +764,7 @@ export default function Trabajadoras() {
                       </div>
                     ) : (
                       <p className="mt-4 text-xs text-[#A2958B]">
-                        No hay operaciones activas en esta área.
+                        No hay operaciones en esta área.
                       </p>
                     )}
                   </article>
@@ -724,13 +775,12 @@ export default function Trabajadoras() {
 
           <p className="mt-5 rounded-xl bg-[#FAF6F2] p-3 text-xs leading-5 text-[#928176]">
             Las operaciones se consultan desde la API. La creación y edición
-            de operaciones no está habilitada en los endpoints que compartiste.
+            de operaciones requiere endpoints adicionales.
           </p>
         </section>
       )}
 
       {/* VISTA: CARGA DE TRABAJO */}
-
       {view === "carga" && (
         <section className={cardClass}>
           <div className="mb-5">
@@ -790,10 +840,22 @@ export default function Trabajadoras() {
             <>
               <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
                 {[
-                  ["Horas disponibles", t.capacity.horas_disponibles, "h"],
-                  ["Horas reservadas", t.capacity.horas_reservadas, "h"],
-                  ["Horas libres", t.capacity.horas_libres, "h"],
-                  ["Ocupación", t.capacity.ocupacion_porcentaje, "%"],
+                  [
+                    "Horas disponibles",
+                    t.capacity.horas_disponibles,
+                    " h",
+                  ],
+                  [
+                    "Horas reservadas",
+                    t.capacity.horas_reservadas,
+                    " h",
+                  ],
+                  ["Horas libres", t.capacity.horas_libres, " h"],
+                  [
+                    "Ocupación",
+                    t.capacity.ocupacion_porcentaje,
+                    "%",
+                  ],
                 ].map(([label, value, suffix]) => (
                   <div
                     key={String(label)}
@@ -824,6 +886,7 @@ export default function Trabajadoras() {
                         <th className="px-3 py-3 font-medium">Sobrecarga</th>
                       </tr>
                     </thead>
+
                     <tbody>
                       {t.capacity.detalle?.map((day) => (
                         <tr
@@ -875,8 +938,12 @@ export default function Trabajadoras() {
                             {reservation.fecha} · {reservation.estado}
                           </p>
                         </div>
+
                         <span className="rounded-lg bg-[#F8F0E9] px-2.5 py-1.5 text-xs text-[#805C42]">
-                          {formatoHoras(reservation.horas_reservadas)} h
+                          {formatoHoras(
+                            reservation.horas_reservadas
+                          )}{" "}
+                          h
                         </span>
                       </div>
                     ))}
@@ -889,7 +956,6 @@ export default function Trabajadoras() {
       )}
 
       {/* VISTA: REPORTES */}
-
       {view === "reportes" && (
         <section className={cardClass}>
           <div className="mb-5">
@@ -905,17 +971,23 @@ export default function Trabajadoras() {
             <table className="w-full min-w-[440px] text-left text-sm">
               <thead className="bg-[#FAF6F2] text-xs text-[#928176]">
                 <tr>
-                  <th className="rounded-l-lg px-3 py-3 font-medium">Área</th>
+                  <th className="rounded-l-lg px-3 py-3 font-medium">
+                    Área
+                  </th>
                   <th className="px-3 py-3 font-medium">Total</th>
                   <th className="px-3 py-3 font-medium">Activas</th>
-                  <th className="rounded-r-lg px-3 py-3 font-medium">Inactivas</th>
+                  <th className="rounded-r-lg px-3 py-3 font-medium">
+                    Inactivas
+                  </th>
                 </tr>
               </thead>
+
               <tbody>
                 {t.options.areas.map((item) => {
                   const group = t.people.filter(
                     (worker) => worker.area === item.valor
                   );
+
                   const active = group.filter(
                     (worker) => worker.activa
                   ).length;
@@ -950,11 +1022,10 @@ export default function Trabajadoras() {
       )}
 
       {/* MODAL: CREAR O EDITAR PERSONAL */}
-
       {modal === "personal" && (
         <Modal
           title={t.editing ? "Editar trabajadora" : "Nueva trabajadora"}
-          description="Completa los datos del equipo del taller."
+          description="Completa los datos personales y de acceso."
           onClose={closeModal}
         >
           <form onSubmit={submitPerson} className="space-y-4">
@@ -962,6 +1033,7 @@ export default function Trabajadoras() {
               <input
                 className={inputClass}
                 autoFocus
+                autoComplete="name"
                 required
                 maxLength={150}
                 placeholder="Ej. María López"
@@ -988,6 +1060,7 @@ export default function Trabajadoras() {
                 }
               >
                 <option value="">Seleccionar área</option>
+
                 {t.options.areas.map((item) => (
                   <option key={item.valor} value={item.valor}>
                     {item.nombre}
@@ -996,6 +1069,93 @@ export default function Trabajadoras() {
               </select>
             </Field>
 
+            {/* CREDENCIALES: CREACIÓN Y EDICIÓN */}
+            <div className="space-y-3 rounded-xl border border-[#EDE5DF] bg-[#FAF6F2] p-4">
+              <div>
+                <h3 className="text-sm font-semibold text-[#44352D]">
+                  Acceso al sistema
+                </h3>
+
+                <p className="mt-1 text-xs leading-5 text-[#928176]">
+                  {t.editing
+                    ? "Actualiza el usuario o correo si es necesario. La contraseña actual nunca se muestra."
+                    : "Define las credenciales que utilizará la trabajadora para iniciar sesión."}
+                </p>
+              </div>
+
+              <Field label="Nombre de usuario">
+                <input
+                  className={inputClass}
+                  type="text"
+                  autoComplete="off"
+                  required
+                  minLength={3}
+                  maxLength={150}
+                  placeholder="Ej. maria.lopez"
+                  value={t.form.username}
+                  onChange={(event) =>
+                    t.setForm({
+                      ...t.form,
+                      username: event.target.value,
+                    })
+                  }
+                />
+              </Field>
+
+              <Field label="Correo electrónico">
+                <input
+                  className={inputClass}
+                  type="email"
+                  autoComplete="email"
+                  required
+                  maxLength={254}
+                  placeholder="Ej. maria@correo.com"
+                  value={t.form.email}
+                  onChange={(event) =>
+                    t.setForm({
+                      ...t.form,
+                      email: event.target.value,
+                    })
+                  }
+                />
+              </Field>
+
+              <Field
+                label={
+                  t.editing
+                    ? "Nueva contraseña (opcional)"
+                    : "Contraseña"
+                }
+              >
+                <input
+                  className={inputClass}
+                  type="password"
+                  autoComplete="new-password"
+                  required={!t.editing}
+                  minLength={8}
+                  maxLength={128}
+                  placeholder={
+                    t.editing
+                      ? "Dejar vacía para mantener la actual"
+                      : "Mínimo 8 caracteres"
+                  }
+                  value={t.form.password}
+                  onChange={(event) =>
+                    t.setForm({
+                      ...t.form,
+                      password: event.target.value,
+                    })
+                  }
+                />
+              </Field>
+
+              <p className="text-xs leading-5 text-[#928176]">
+                {t.editing
+                  ? "Si dejas la contraseña vacía, el formulario no enviará una nueva contraseña."
+                  : "La cuenta se creará asociada a esta trabajadora. El rol y los permisos deben ser asignados por el backend."}
+              </p>
+            </div>
+
             <fieldset className="rounded-xl border border-[#EDE5DF] p-3.5">
               <legend className="px-1 text-sm font-medium text-[#59463A]">
                 Habilidades y operaciones
@@ -1003,7 +1163,7 @@ export default function Trabajadoras() {
 
               {t.options.operaciones.length === 0 ? (
                 <p className="py-2 text-xs text-[#928176]">
-                  No hay operaciones activas registradas.
+                  No hay operaciones registradas.
                 </p>
               ) : (
                 <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2">
@@ -1029,13 +1189,21 @@ export default function Trabajadoras() {
                             t.setForm((current) => ({
                               ...current,
                               habilidades: event.target.checked
-                                ? [...current.habilidades, operation.id]
+                                ? current.habilidades.includes(
+                                    operation.id
+                                  )
+                                  ? current.habilidades
+                                  : [
+                                      ...current.habilidades,
+                                      operation.id,
+                                    ]
                                 : current.habilidades.filter(
                                     (id) => id !== operation.id
                                   ),
                             }))
                           }
                         />
+
                         <span className="min-w-0">
                           <span className="block text-[#59463A]">
                             {operation.nombre}
@@ -1080,6 +1248,7 @@ export default function Trabajadoras() {
                   })
                 }
               />
+
               <span>
                 <span className="block text-sm font-medium">
                   Personal activo
@@ -1093,7 +1262,7 @@ export default function Trabajadoras() {
             {t.error && (
               <p
                 role="alert"
-                className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700"
+                className="break-words rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700"
               >
                 {t.error}
               </p>
@@ -1108,6 +1277,7 @@ export default function Trabajadoras() {
               >
                 Cancelar
               </button>
+
               <button
                 type="submit"
                 className={primaryButton}
@@ -1125,7 +1295,6 @@ export default function Trabajadoras() {
       )}
 
       {/* MODAL: HORARIO */}
-
       {modal === "horario" && activePerson && (
         <Modal
           title="Horario semanal"
@@ -1164,12 +1333,17 @@ export default function Trabajadoras() {
                         onChange={(event) =>
                           t.setHours((current) =>
                             current.map((value, i) =>
-                              i === index ? event.target.value : value
+                              i === index
+                                ? event.target.value
+                                : value
                             )
                           )
                         }
                       />
-                      <span className="w-3 text-xs text-[#928176]">h</span>
+
+                      <span className="w-3 text-xs text-[#928176]">
+                        h
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -1195,6 +1369,7 @@ export default function Trabajadoras() {
                 >
                   Cancelar
                 </button>
+
                 <button
                   type="submit"
                   className={primaryButton}
@@ -1209,7 +1384,6 @@ export default function Trabajadoras() {
       )}
 
       {/* MODAL: AUSENCIAS */}
-
       {modal === "ausencia" && (
         <Modal
           title="Ausencias y permisos"
@@ -1226,6 +1400,7 @@ export default function Trabajadoras() {
                 }
               >
                 <option value="">Seleccionar trabajadora</option>
+
                 {t.people.map((worker) => (
                   <option key={worker.id} value={worker.id}>
                     {worker.nombre}
@@ -1356,15 +1531,19 @@ export default function Trabajadoras() {
                               {item.fecha_inicio} — {item.fecha_fin}
                             </p>
                             <p className="mt-1 text-xs text-[#928176]">
-                              {formatoHoras(item.horas_no_disponibles)} h/día
+                              {formatoHoras(
+                                item.horas_no_disponibles
+                              )}{" "}
+                              h/día
                               {item.motivo ? ` · ${item.motivo}` : ""}
                             </p>
                           </div>
+
                           <button
                             type="button"
                             className="shrink-0 rounded-lg p-2 text-[#9B7463] hover:bg-red-50 hover:text-red-700"
                             title="Eliminar ausencia"
-                            aria-label="Eliminar ausencia"
+                            aria-label={`Eliminar ausencia del ${item.fecha_inicio}`}
                             onClick={() =>
                               void handleDeleteAbsence(item.id)
                             }
