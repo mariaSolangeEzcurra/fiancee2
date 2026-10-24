@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
+from rest_framework import status, serializers
 from drf_spectacular.utils import extend_schema
 from drf_spectacular.types import OpenApiTypes
 
@@ -18,8 +18,29 @@ from core.models import (
     ReservaOperacion,
     RegistroAsistencia,
     SesionTrabajo,
+    DisponibilidadSemanal,
+    AusenciaTrabajadora,
 )
 
+
+class ObservacionesRequestSerializer(serializers.Serializer):
+    observaciones = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+
+
+class IniciarSesionTrabajoRequestSerializer(
+    ObservacionesRequestSerializer
+):
+    reserva_id = serializers.IntegerField(min_value=1)
+
+
+class FinalizarSesionTrabajoRequestSerializer(
+    ObservacionesRequestSerializer
+):
+    completar = serializers.BooleanField(required=False, default=False)
 
 class EsPersonalTaller(IsAuthenticated):
     """
@@ -173,6 +194,12 @@ class IniciarJornadaView(APIView):
     permission_classes = [EsPersonalTaller]
 
     @extend_schema(
+    operation_id="taller_iniciar_jornada",
+    request=ObservacionesRequestSerializer,
+    responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+)
+
+    @extend_schema(
         operation_id="taller_iniciar_jornada",
         request=OpenApiTypes.OBJECT,
         responses={
@@ -231,6 +258,12 @@ class IniciarJornadaView(APIView):
 
 class FinalizarJornadaView(APIView):
     permission_classes = [EsPersonalTaller]
+
+    @extend_schema(
+    operation_id="taller_finalizar_jornada",
+    request=ObservacionesRequestSerializer,
+    responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+)
 
     @extend_schema(
         operation_id="taller_finalizar_jornada",
@@ -349,6 +382,17 @@ class MisTrabajosView(APIView):
 class IniciarSesionTrabajoView(APIView):
     permission_classes = [EsPersonalTaller]
 
+    @extend_schema(
+    operation_id="taller_iniciar_sesion",
+    request=IniciarSesionTrabajoRequestSerializer,
+    responses={
+        201: OpenApiTypes.OBJECT,
+        400: OpenApiTypes.OBJECT,
+        403: OpenApiTypes.OBJECT,
+        404: OpenApiTypes.OBJECT,
+    },
+)
+
     @transaction.atomic
     def post(self, request):
         trabajadora = obtener_trabajadora(request)
@@ -465,6 +509,16 @@ class IniciarSesionTrabajoView(APIView):
 
 class FinalizarSesionTrabajoView(APIView):
     permission_classes = [EsPersonalTaller]
+
+    @extend_schema(
+    operation_id="taller_finalizar_sesion",
+    request=FinalizarSesionTrabajoRequestSerializer,
+    responses={
+        200: OpenApiTypes.OBJECT,
+        400: OpenApiTypes.OBJECT,
+        404: OpenApiTypes.OBJECT,
+    },
+)
 
     @transaction.atomic
     def post(self, request, pk):
@@ -613,4 +667,196 @@ class MiResumenTallerView(APIView):
                 estado=ReservaOperacion.Estado.COMPLETADA,
                 fecha__range=(inicio_semana, fin_semana),
             ).count(),
+        })
+
+
+class MiDisponibilidadTallerView(APIView):
+    """Consulta únicamente la disponibilidad de la trabajadora autenticada."""
+
+    permission_classes = [EsPersonalTaller]
+
+    @extend_schema(
+        operation_id="taller_mi_disponibilidad",
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        trabajadora = obtener_trabajadora(request)
+
+        horarios = DisponibilidadSemanal.objects.filter(
+            trabajadora=trabajadora
+        ).order_by("dia_semana")
+
+        resultado = [
+            {
+                "id": horario.id,
+                "dia_semana": horario.dia_semana,
+                "dia_nombre": horario.get_dia_semana_display(),
+                "horas_disponibles": horario.horas_disponibles,
+            }
+            for horario in horarios
+        ]
+
+        return Response({
+            "trabajadora": trabajadora.nombre,
+            "total_dias_configurados": len(resultado),
+            "disponibilidad": resultado,
+        })
+
+
+class MisAusenciasTallerView(APIView):
+    """Consulta únicamente las ausencias de la trabajadora autenticada."""
+
+    permission_classes = [EsPersonalTaller]
+
+    @extend_schema(
+        operation_id="taller_mis_ausencias",
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        trabajadora = obtener_trabajadora(request)
+
+        ausencias = AusenciaTrabajadora.objects.filter(
+            trabajadora=trabajadora
+        ).order_by("-fecha_inicio", "-id")
+
+        resultado = [
+            {
+                "id": ausencia.id,
+                "fecha_inicio": ausencia.fecha_inicio,
+                "fecha_fin": ausencia.fecha_fin,
+                "horas_no_disponibles": ausencia.horas_no_disponibles,
+                "motivo": ausencia.motivo,
+            }
+            for ausencia in ausencias
+        ]
+
+        return Response({
+            "trabajadora": trabajadora.nombre,
+            "total": len(resultado),
+            "ausencias": resultado,
+        })
+
+
+class MiHistorialTallerView(APIView):
+    """
+    Consulta el historial personal de asistencia y sesiones de producción.
+
+    Permite filtrar con los parámetros opcionales:
+    desde=AAAA-MM-DD
+    hasta=AAAA-MM-DD
+    """
+
+    permission_classes = [EsPersonalTaller]
+
+    @extend_schema(
+        operation_id="taller_mi_historial",
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        from datetime import date
+
+        from django.utils.dateparse import parse_date
+
+        trabajadora = obtener_trabajadora(request)
+
+        desde_texto = request.query_params.get("desde")
+        hasta_texto = request.query_params.get("hasta")
+
+        desde = parse_date(desde_texto) if desde_texto else None
+        hasta = parse_date(hasta_texto) if hasta_texto else None
+
+        if desde_texto and desde is None:
+            return Response(
+                {"detail": "El parámetro 'desde' debe tener formato AAAA-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if hasta_texto and hasta is None:
+            return Response(
+                {"detail": "El parámetro 'hasta' debe tener formato AAAA-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if desde and hasta and desde > hasta:
+            return Response(
+                {"detail": "'desde' no puede ser posterior a 'hasta'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        asistencias = RegistroAsistencia.objects.filter(
+            trabajadora=trabajadora
+        ).order_by("-fecha", "-entrada")
+
+        sesiones = SesionTrabajo.objects.filter(
+            reserva__trabajadora=trabajadora
+        ).select_related(
+            "reserva",
+            "reserva__contrato",
+            "reserva__contrato__simulacion",
+            "reserva__contrato__simulacion__cliente",
+            "reserva__contrato__simulacion__tipo_vestido",
+            "reserva__plantilla",
+            "reserva__plantilla__operacion",
+        ).order_by("-inicio")
+
+        if desde:
+            asistencias = asistencias.filter(fecha__gte=desde)
+            sesiones = sesiones.filter(inicio__date__gte=desde)
+
+        if hasta:
+            asistencias = asistencias.filter(fecha__lte=hasta)
+            sesiones = sesiones.filter(inicio__date__lte=hasta)
+
+        historial_asistencia = [
+            serializar_asistencia(asistencia)
+            for asistencia in asistencias
+        ]
+
+        historial_sesiones = []
+
+        for sesion in sesiones:
+            reserva = sesion.reserva
+            contrato = reserva.contrato
+            simulacion = contrato.simulacion
+            operacion = reserva.plantilla.operacion
+
+            historial_sesiones.append({
+                "id": sesion.id,
+                "reserva_id": reserva.id,
+                "fecha": timezone.localtime(sesion.inicio).date(),
+                "vestido": {
+                    "contrato_id": contrato.id,
+                    "numero": contrato.numero,
+                    "cliente": str(simulacion.cliente),
+                    "tipo": str(simulacion.tipo_vestido),
+                },
+                "proceso": {
+                    "nombre": operacion.nombre,
+                    "area": operacion.area_responsable,
+                },
+                "estado_proceso": reserva.estado,
+                "inicio": sesion.inicio,
+                "fin": sesion.fin,
+                "sesion_activa": sesion.fin is None,
+                "horas_trabajadas": horas_decimal(
+                    sesion.inicio, sesion.fin
+                ),
+                "observaciones_inicio": sesion.observaciones_inicio,
+                "observaciones_fin": sesion.observaciones_fin,
+            })
+
+        return Response({
+            "trabajadora": trabajadora.nombre,
+            "filtros": {
+                "desde": desde,
+                "hasta": hasta,
+            },
+            "asistencias": {
+                "total": len(historial_asistencia),
+                "registros": historial_asistencia,
+            },
+            "sesiones_trabajo": {
+                "total": len(historial_sesiones),
+                "registros": historial_sesiones,
+            },
         })
