@@ -20,6 +20,9 @@ from core.models import (
     SesionTrabajo,
     DisponibilidadSemanal,
     AusenciaTrabajadora,
+    VestidoContrato,
+    SesionVestido,
+    PausaSesionVestido,
 )
 
 
@@ -296,21 +299,29 @@ class FinalizarJornadaView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tiene_sesion_activa = SesionTrabajo.objects.filter(
-            reserva__trabajadora=trabajadora,
-            fin__isnull=True,
-        ).exists()
+            tiene_sesion_activa = SesionTrabajo.objects.filter(
+                reserva__trabajadora=trabajadora,
+                fin__isnull=True,
+            ).exists()
 
-        if tiene_sesion_activa:
-            return Response(
-                {
-                    "detail": (
-                        "Antes de finalizar tu jornada, "
-                        "detén el cronómetro del proceso que estás realizando."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            tiene_sesion_vestido_abierta = SesionVestido.objects.filter(
+                trabajadora=trabajadora,
+                estado__in=[
+                    SesionVestido.Estado.EN_CURSO,
+                    SesionVestido.Estado.PAUSADA,
+                ],
+            ).exists()
+
+            if tiene_sesion_activa or tiene_sesion_vestido_abierta:
+                return Response(
+                    {
+                        "detail": (
+                            "Antes de finalizar tu jornada, debes finalizar "
+                            "todas las sesiones de trabajo abiertas."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         asistencia.salida = timezone.now()
         asistencia.observaciones_salida = request.data.get(
@@ -859,4 +870,368 @@ class MiHistorialTallerView(APIView):
                 "total": len(historial_sesiones),
                 "registros": historial_sesiones,
             },
+        })
+
+
+
+def serializar_sesion_vestido(sesion):
+    return {
+        "id": sesion.id,
+        "vestido_id": sesion.vestido_id,
+        "codigo": sesion.vestido.codigo,
+        "contrato": sesion.vestido.contrato.numero,
+        "inicio": sesion.inicio,
+        "fin": sesion.fin,
+        "estado": sesion.estado,
+        "horas_efectivas": sesion.horas_efectivas,
+        "observaciones": sesion.observaciones,
+        "pausada": sesion.estado == SesionVestido.Estado.PAUSADA,
+    }
+
+
+def obtener_asistencia_activa(trabajadora):
+    return RegistroAsistencia.objects.filter(
+        trabajadora=trabajadora,
+        fecha=timezone.localdate(),
+        salida__isnull=True,
+    ).first()
+
+
+
+class VestidosDisponiblesView(APIView):
+    permission_classes = [EsPersonalTaller]
+
+    def get(self, request):
+        vestidos = VestidoContrato.objects.filter(
+            estado=VestidoContrato.Estado.PENDIENTE,
+            contrato__estado__in=["ACTIVO", "EN_PRODUCCION"],
+        ).select_related(
+            "contrato",
+            "contrato__simulacion",
+            "contrato__simulacion__cliente",
+            "contrato__simulacion__tipo_vestido",
+        ).order_by(
+            "contrato__numero",
+            "numero",
+        )
+
+        # Excluir vestidos que ya tengan una sesión abierta.
+        vestidos = vestidos.exclude(
+            sesiones_trabajo__estado__in=[
+                SesionVestido.Estado.EN_CURSO,
+                SesionVestido.Estado.PAUSADA,
+            ]
+        )
+
+        resultado = []
+
+        for vestido in vestidos.distinct():
+            contrato = vestido.contrato
+            simulacion = contrato.simulacion
+            cliente = simulacion.cliente
+
+            resultado.append({
+                "id": vestido.id,
+                "vestido_id": vestido.id,
+                "numero": vestido.numero,
+                "codigo": vestido.codigo,
+                "estado": vestido.estado,
+                "contrato": contrato.numero,
+                "contrato_id": contrato.id,
+                "cliente": cliente.nombre,
+                "tipo_vestido": str(simulacion.tipo_vestido),
+                "fecha_entrega": contrato.fecha_entrega,
+            })
+
+        return Response(resultado)
+
+
+class IniciarSesionVestidoView(APIView):
+    permission_classes = [EsPersonalTaller]
+
+    @transaction.atomic
+    def post(self, request):
+        trabajadora = obtener_trabajadora(request)
+        vestido_id = request.data.get("vestido_id")
+        observaciones = request.data.get("observaciones", "")
+
+        if not vestido_id:
+            return Response(
+                {"detail": "Debes seleccionar un vestido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        jornada = RegistroAsistencia.objects.select_for_update().filter(
+            trabajadora=trabajadora,
+            fecha=timezone.localdate(),
+            salida__isnull=True,
+        ).first()
+
+        if not jornada:
+            return Response(
+                {"detail": "Primero debes iniciar tu jornada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sesion_abierta = SesionVestido.objects.filter(
+            trabajadora=trabajadora,
+            estado__in=[
+                SesionVestido.Estado.EN_CURSO,
+                SesionVestido.Estado.PAUSADA,
+            ],
+        ).first()
+
+        if sesion_abierta:
+            return Response(
+                {
+                    "detail": (
+                        "Debes finalizar o resolver tu sesión actual "
+                        "antes de iniciar otro vestido."
+                    ),
+                    "sesion": serializar_sesion_vestido(sesion_abierta),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vestido = VestidoContrato.objects.select_for_update().filter(
+            pk=vestido_id
+        ).select_related("contrato").first()
+
+        if not vestido:
+            return Response(
+                {"detail": "El vestido seleccionado no existe."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if vestido.contrato.estado not in ["ACTIVO", "EN_PRODUCCION"]:
+            return Response(
+                {"detail": "El contrato no está habilitado para producción."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if vestido.estado != VestidoContrato.Estado.PENDIENTE:
+            return Response(
+                {"detail": "Este vestido ya no está disponible."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        otra_sesion = SesionVestido.objects.filter(
+            vestido=vestido,
+            estado__in=[
+                SesionVestido.Estado.EN_CURSO,
+                SesionVestido.Estado.PAUSADA,
+            ],
+        ).first()
+
+        if otra_sesion:
+            return Response(
+                {"detail": "Este vestido está siendo trabajado por otra persona."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sesion = SesionVestido.objects.create(
+            trabajadora=trabajadora,
+            jornada=jornada,
+            vestido=vestido,
+            inicio=timezone.now(),
+            estado=SesionVestido.Estado.EN_CURSO,
+            observaciones=observaciones,
+        )
+
+        vestido.estado = VestidoContrato.Estado.EN_PROCESO
+        vestido.save(update_fields=["estado"])
+
+        return Response(
+            {
+                "detail": "Trabajo del vestido iniciado correctamente.",
+                "sesion": serializar_sesion_vestido(sesion),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PausarSesionVestidoView(APIView):
+    permission_classes = [EsPersonalTaller]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        trabajadora = obtener_trabajadora(request)
+
+        sesion = SesionVestido.objects.select_for_update().filter(
+            pk=pk,
+            trabajadora=trabajadora,
+        ).select_related("vestido", "vestido__contrato").first()
+
+        if not sesion:
+            return Response(
+                {"detail": "No se encontró la sesión."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if sesion.estado != SesionVestido.Estado.EN_CURSO:
+            return Response(
+                {"detail": "Solo puedes pausar una sesión en curso."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        PausaSesionVestido.objects.create(
+            sesion=sesion,
+            inicio=timezone.now(),
+            motivo=request.data.get("motivo", ""),
+        )
+
+        sesion.estado = SesionVestido.Estado.PAUSADA
+        sesion.save(update_fields=["estado"])
+
+        return Response({
+            "detail": "Sesión pausada correctamente.",
+            "sesion": serializar_sesion_vestido(sesion),
+        })
+
+
+class ReanudarSesionVestidoView(APIView):
+    permission_classes = [EsPersonalTaller]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        trabajadora = obtener_trabajadora(request)
+
+        sesion = SesionVestido.objects.select_for_update().filter(
+            pk=pk,
+            trabajadora=trabajadora,
+        ).select_related("vestido", "vestido__contrato").first()
+
+        if not sesion:
+            return Response(
+                {"detail": "No se encontró la sesión."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if sesion.estado != SesionVestido.Estado.PAUSADA:
+            return Response(
+                {"detail": "La sesión no está pausada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pausa = PausaSesionVestido.objects.filter(
+            sesion=sesion,
+            fin__isnull=True,
+        ).first()
+
+        if not pausa:
+            return Response(
+                {"detail": "No se encontró una pausa abierta."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pausa.fin = timezone.now()
+        pausa.save(update_fields=["fin"])
+
+        sesion.estado = SesionVestido.Estado.EN_CURSO
+        sesion.save(update_fields=["estado"])
+
+        return Response({
+            "detail": "Sesión reanudada correctamente.",
+            "sesion": serializar_sesion_vestido(sesion),
+        })
+
+
+class FinalizarSesionVestidoView(APIView):
+    permission_classes = [EsPersonalTaller]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        trabajadora = obtener_trabajadora(request)
+
+        sesion = SesionVestido.objects.select_for_update().filter(
+            pk=pk,
+            trabajadora=trabajadora,
+        ).select_related("vestido", "vestido__contrato").first()
+
+        if not sesion:
+            return Response(
+                {"detail": "No se encontró la sesión."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if sesion.estado == SesionVestido.Estado.FINALIZADA:
+            return Response(
+                {"detail": "Esta sesión ya fue finalizada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pausa_abierta = PausaSesionVestido.objects.filter(
+            sesion=sesion,
+            fin__isnull=True,
+        ).first()
+
+        if pausa_abierta:
+            pausa_abierta.fin = timezone.now()
+            pausa_abierta.save(update_fields=["fin"])
+
+        observaciones_finales = request.data.get("observaciones", "").strip()
+
+        if observaciones_finales:
+            if sesion.observaciones:
+                sesion.observaciones += "\n" + observaciones_finales
+            else:
+                sesion.observaciones = observaciones_finales
+
+        sesion.fin = timezone.now()
+        sesion.estado = SesionVestido.Estado.FINALIZADA
+        sesion.save(
+            update_fields=["fin", "estado", "observaciones"]
+        )
+
+        vestido = sesion.vestido
+        vestido.estado = VestidoContrato.Estado.FINALIZADO
+        vestido.save(update_fields=["estado"])
+
+        return Response({
+            "detail": "Vestido finalizado correctamente.",
+            "sesion": serializar_sesion_vestido(sesion),
+        })
+
+
+class MiResumenDiarioVestidosView(APIView):
+    permission_classes = [EsPersonalTaller]
+
+    def get(self, request):
+        trabajadora = obtener_trabajadora(request)
+        hoy = timezone.localdate()
+
+        jornada = RegistroAsistencia.objects.filter(
+            trabajadora=trabajadora,
+            fecha=hoy,
+        ).first()
+
+        sesiones = SesionVestido.objects.filter(
+            trabajadora=trabajadora,
+            jornada=jornada,
+        ).select_related(
+            "vestido",
+            "vestido__contrato",
+        ).prefetch_related("pausas").order_by("inicio") if jornada else (
+            SesionVestido.objects.none()
+        )
+
+        sesiones_serializadas = [
+            serializar_sesion_vestido(sesion)
+            for sesion in sesiones
+        ]
+
+        total_horas = sum(
+            (
+                sesion.horas_efectivas
+                for sesion in sesiones
+            ),
+            Decimal("0"),
+        )
+
+        return Response({
+            "fecha": hoy,
+            "asistencia": serializar_asistencia(jornada),
+            "total_vestidos": len(sesiones_serializadas),
+            "horas_efectivas": total_horas,
+            "sesiones": sesiones_serializadas,
         })

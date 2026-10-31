@@ -394,6 +394,50 @@ class Contrato(models.Model):
 
 
 # ============================================================
+# 4.1 VESTIDOS INDIVIDUALES DE CADA CONTRATO
+# ============================================================
+
+class VestidoContrato(models.Model):
+
+    class Estado(models.TextChoices):
+        PENDIENTE = "PENDIENTE", "Pendiente"
+        EN_PROCESO = "EN_PROCESO", "En proceso"
+        FINALIZADO = "FINALIZADO", "Finalizado"
+
+    contrato = models.ForeignKey(
+        Contrato,
+        on_delete=models.PROTECT,
+        related_name="vestidos",
+    )
+
+    numero = models.PositiveIntegerField()
+
+    codigo = models.CharField(
+        max_length=60,
+        unique=True,
+    )
+
+    estado = models.CharField(
+        max_length=15,
+        choices=Estado.choices,
+        default=Estado.PENDIENTE,
+    )
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["contrato", "numero"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["contrato", "numero"],
+                name="vestido_unico_por_contrato",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.codigo} - {self.contrato.numero}"
+
+# ============================================================
 # 5. FINANZAS
 # ============================================================
 
@@ -874,6 +918,127 @@ class RegistroAsistencia(models.Model):
 
     def __str__(self):
         return f"{self.trabajadora.nombre} - {self.fecha}"
+
+
+
+# ============================================================
+# SESIONES DE TRABAJO POR VESTIDO
+# ============================================================
+
+class SesionVestido(models.Model):
+
+    class Estado(models.TextChoices):
+        EN_CURSO = "EN_CURSO", "En curso"
+        PAUSADA = "PAUSADA", "Pausada"
+        FINALIZADA = "FINALIZADA", "Finalizada"
+
+    trabajadora = models.ForeignKey(
+        "Trabajadora",
+        on_delete=models.PROTECT,
+        related_name="sesiones_vestidos",
+    )
+
+    jornada = models.ForeignKey(
+        "RegistroAsistencia",
+        on_delete=models.PROTECT,
+        related_name="sesiones_vestidos",
+    )
+
+    vestido = models.ForeignKey(
+        "VestidoContrato",
+        on_delete=models.PROTECT,
+        related_name="sesiones_trabajo",
+    )
+
+    inicio = models.DateTimeField(default=timezone.now)
+    fin = models.DateTimeField(null=True, blank=True)
+
+    estado = models.CharField(
+        max_length=12,
+        choices=Estado.choices,
+        default=Estado.EN_CURSO,
+    )
+
+    observaciones = models.TextField(blank=True)
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-inicio"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["trabajadora"],
+                condition=models.Q(
+                    estado__in=["EN_CURSO", "PAUSADA"]
+                ),
+                name="una_sesion_abierta_por_trabajadora",
+            ),
+            models.UniqueConstraint(
+                fields=["vestido"],
+                condition=models.Q(
+                    estado__in=["EN_CURSO", "PAUSADA"]
+                ),
+                name="una_sesion_abierta_por_vestido",
+            ),
+        ]
+
+    @property
+    def horas_efectivas(self):
+        final = self.fin or timezone.now()
+
+        segundos_totales = (final - self.inicio).total_seconds()
+
+        segundos_pausa = 0
+
+        for pausa in self.pausas.all():
+            fin_pausa = pausa.fin or timezone.now()
+
+            segundos_pausa += max(
+                0,
+                (fin_pausa - pausa.inicio).total_seconds(),
+            )
+
+        segundos_efectivos = max(
+            0,
+            segundos_totales - segundos_pausa,
+        )
+
+        return Decimal(str(segundos_efectivos / 3600))
+
+    def __str__(self):
+        return f"{self. vestido.codigo} - {self.trabajadora.nombre}"
+
+
+class PausaSesionVestido(models.Model):
+
+    sesion = models.ForeignKey(
+        SesionVestido,
+        on_delete=models.CASCADE,
+        related_name="pausas",
+    )
+
+    inicio = models.DateTimeField(default=timezone.now)
+    fin = models.DateTimeField(null=True, blank=True)
+
+    motivo = models.CharField(
+        max_length=200,
+        blank=True,
+    )
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["inicio"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sesion"],
+                condition=models.Q(fin__isnull=True),
+                name="una_pausa_abierta_por_sesion",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.vestido.codigo} - {self.trabajadora.nombre}"
 
 
 class SesionTrabajo(models.Model):
