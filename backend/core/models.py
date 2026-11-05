@@ -139,6 +139,7 @@ class RutaProduccion(models.Model):
     class Tipo(models.TextChoices):
         TALLER_A = "A", "Taller A - Confección desde cero"
         TALLER_C = "C", "Taller C - Compra y modificación"
+        TIENDA = "T", "Tienda - Modificación de vestido en stock"
 
     tipo_vestido = models.ForeignKey(
         TipoVestido,
@@ -236,6 +237,7 @@ class Cliente(models.Model):
     documento = models.CharField(max_length=30, blank=True)
     telefono = models.CharField(max_length=30, blank=True)
     correo = models.EmailField(blank=True)
+    direccion = models.CharField(max_length=250, blank=True)
     activo = models.BooleanField(default=True)
     observaciones = models.TextField(blank=True)
 
@@ -352,25 +354,97 @@ class DetalleSimulacion(models.Model):
 # ============================================================
 
 class Contrato(models.Model):
+    """
+    Contrato de locación de servicios.
+
+    Puede nacer de una simulación aceptada o crearse manualmente.
+    Agrupa uno o varios vestidos/ítems (VestidoContrato); cada uno
+    tiene su propio tipo de vestido, taller y precio.
+    """
+
     class Estado(models.TextChoices):
         ACTIVO = "ACTIVO", "Activo"
         EN_PRODUCCION = "EN_PRODUCCION", "En producción"
         ENTREGADO = "ENTREGADO", "Entregado"
         CANCELADO = "CANCELADO", "Cancelado"
 
+    class TipoEvento(models.TextChoices):
+        NOVIA = "NOVIA", "Novia"
+        QUINCEANERA = "QUINCEANERA", "Quinceañera"
+        OTRO = "OTRO", "Otros"
+
+    # Nulo cuando el contrato se crea manualmente.
     simulacion = models.OneToOneField(
         SimulacionContrato,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="contrato",
     )
+    cliente = models.ForeignKey(
+        Cliente,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="contratos",
+    )
     numero = models.CharField(max_length=40, unique=True)
+
+    # Fecha del contrato.
     fecha_firma = models.DateField(default=timezone.localdate)
+
+    # Fecha de recojo del vestido por la clienta. Es la fecha límite
+    # de producción del taller.
     fecha_entrega = models.DateField()
+
+    # I. Objeto del contrato: servicios contratados.
+    servicio_alquiler = models.BooleanField(default=False)
+    servicio_venta = models.BooleanField(default=False)
+    servicio_confeccion = models.BooleanField(
+        default=False,
+        help_text="Confección personalizada para venta o alquiler.",
+    )
+
+    # Evento
+    fecha_evento = models.DateField(null=True, blank=True)
+    tipo_evento = models.CharField(
+        max_length=12,
+        choices=TipoEvento.choices,
+        default=TipoEvento.NOVIA,
+    )
+    tipo_evento_detalle = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="Descripción cuando el tipo de evento es 'Otros'.",
+    )
+
+    # Alquiler: devolución del vestido y accesorios.
+    fecha_devolucion = models.DateField(null=True, blank=True)
+
+    # Sesión de fotos
+    fecha_recojo_fotos = models.DateField(null=True, blank=True)
+    fecha_devolucion_fotos = models.DateField(null=True, blank=True)
+
+    # Servicio de lavandería (si aplica)
+    servicio_lavanderia = models.CharField(max_length=250, blank=True)
+
+    # Monto total = suma de los ítems del contrato.
     precio_total = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         validators=[MinValueValidator(Decimal("0"))],
     )
+
+    # Garantía: se entrega en el recojo del vestido, junto con el DNI
+    # original y un recibo de agua o luz.
+    garantia = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    garantia_detalle = models.CharField(max_length=250, blank=True)
+
     estado = models.CharField(
         max_length=15,
         choices=Estado.choices,
@@ -378,6 +452,26 @@ class Contrato(models.Model):
     )
     condiciones_pago = models.TextField(blank=True)
     observaciones = models.TextField(blank=True)
+
+    asesora = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contratos_asesorados",
+    )
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contratos_creados",
+    )
+    creado_en = models.DateTimeField(default=timezone.now)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-fecha_firma", "-id"]
 
     @property
     def total_pagado(self):
@@ -398,11 +492,23 @@ class Contrato(models.Model):
 # ============================================================
 
 class VestidoContrato(models.Model):
+    """
+    Ítem del contrato (fila de la tabla ITEM / DESCRIPCIÓN / PRECIO).
+
+    Si tiene ruta (taller A o C), pasa al taller: se planifican sus
+    operaciones y se reservan horas de las trabajadoras.
+    Si no tiene ruta (p. ej. alquiler de un vestido de stock o un
+    accesorio), solo figura en el contrato y no ocupa capacidad.
+    """
 
     class Estado(models.TextChoices):
         PENDIENTE = "PENDIENTE", "Pendiente"
         EN_PROCESO = "EN_PROCESO", "En proceso"
         FINALIZADO = "FINALIZADO", "Finalizado"
+
+    class Modalidad(models.TextChoices):
+        ALQUILER = "ALQUILER", "Alquiler"
+        VENTA = "VENTA", "Venta"
 
     contrato = models.ForeignKey(
         Contrato,
@@ -417,6 +523,53 @@ class VestidoContrato(models.Model):
         unique=True,
     )
 
+    tipo_vestido = models.ForeignKey(
+        TipoVestido,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="vestidos_contratados",
+    )
+    ruta = models.ForeignKey(
+        RutaProduccion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="vestidos_contratados",
+    )
+
+    descripcion = models.CharField(max_length=250, blank=True)
+    modalidad = models.CharField(
+        max_length=10,
+        choices=Modalidad.choices,
+        default=Modalidad.VENTA,
+    )
+    # Precio en la columna PRECIO ALQUILER o PRECIO VENTA,
+    # según la modalidad.
+    precio = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    # Columna OTROS.
+    precio_otros = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    # Resultado de la planificación automática del taller.
+    fecha_fin_estimada = models.DateField(null=True, blank=True)
+    horas_sin_asignar = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
+    observaciones = models.TextField(blank=True)
+
     estado = models.CharField(
         max_length=15,
         choices=Estado.choices,
@@ -424,6 +577,16 @@ class VestidoContrato(models.Model):
     )
 
     creado_en = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def precio_total(self):
+        return (self.precio or Decimal("0")) + (
+            self.precio_otros or Decimal("0")
+        )
+
+    @property
+    def taller(self):
+        return self.ruta.taller if self.ruta_id else None
 
     class Meta:
         ordering = ["contrato", "numero"]
@@ -436,6 +599,45 @@ class VestidoContrato(models.Model):
 
     def __str__(self):
         return f"{self.codigo} - {self.contrato.numero}"
+
+class ProcesoVestidoContrato(models.Model):
+    """
+    Ajuste de tiempos de un proceso para un vestido concreto.
+
+    Por defecto cada vestido usa las horas de la plantilla de su ruta.
+    Si existe un ajuste, la planificación usa estas horas o, si
+    incluido=False, se salta el proceso para ese vestido.
+    """
+
+    vestido = models.ForeignKey(
+        VestidoContrato,
+        on_delete=models.CASCADE,
+        related_name="procesos",
+    )
+    plantilla = models.ForeignKey(
+        PlantillaOperacion,
+        on_delete=models.PROTECT,
+        related_name="ajustes_vestido",
+    )
+    horas = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    incluido = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["plantilla__orden", "plantilla_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["vestido", "plantilla"],
+                name="ajuste_unico_por_vestido_proceso",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.vestido.codigo} - {self.plantilla.operacion}: {self.horas} h"
+
 
 # ============================================================
 # 5. FINANZAS
@@ -482,6 +684,22 @@ class Pago(models.Model):
         null=True,
         blank=True,
     )
+
+    # 1, 2 o 3 si el pago corresponde al primer, segundo o tercer
+    # adelanto registrado en el contrato. Nulo para otros pagos.
+    orden_adelanto = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["contrato", "orden_adelanto"],
+                condition=models.Q(orden_adelanto__isnull=False),
+                name="adelanto_unico_por_contrato",
+            )
+        ]
 
     def save(self, *args, **kwargs):
         """
@@ -713,6 +931,59 @@ DATOS_TIEMPOS = {
 }
 
 
+# Vestido que ya está hecho en tienda: solo pasa por modificaciones.
+# Mismos procesos que el Taller C, sin compra de materiales.
+# Las horas son referenciales y se ajustan por vestido en el contrato.
+VESTIDO_EN_TIENDA = "Vestido en tienda"
+
+TIEMPOS_VESTIDO_EN_TIENDA = {
+    "prueba 1": 2,
+    "entalle": 8,
+    "prueba 2": 2,
+    "acabados": 8,
+    "basta": 4,
+    "bordado": 0,
+    "lavandería": 24,
+    "prueba 3": 2,
+}
+
+
+def cargar_vestido_en_tienda():
+    """Crea el tipo 'Vestido en tienda' con su ruta T. No pisa ediciones."""
+    with transaction.atomic():
+        vestido, _ = TipoVestido.objects.get_or_create(
+            nombre=VESTIDO_EN_TIENDA,
+            defaults={
+                "descripcion": (
+                    "Vestido de stock de la tienda que solo pasa por "
+                    "modificaciones (sin compra de materiales)."
+                )
+            },
+        )
+        ruta, _ = RutaProduccion.objects.get_or_create(
+            tipo_vestido=vestido,
+            taller=RutaProduccion.Tipo.TIENDA,
+            defaults={"descripcion": "Modificación de vestido en stock"},
+        )
+        for orden, (nombre, horas) in enumerate(
+            TIEMPOS_VESTIDO_EN_TIENDA.items(), start=1
+        ):
+            operacion = Operacion.objects.filter(nombre__iexact=nombre).first()
+            if operacion is None:
+                continue
+            PlantillaOperacion.objects.get_or_create(
+                ruta=ruta,
+                operacion=operacion,
+                defaults={
+                    "orden": orden,
+                    "horas_estimadas": Decimal(str(horas)),
+                    "tipo_tiempo": PlantillaOperacion.TipoTiempo.TRABAJO,
+                    "obligatoria": nombre != "bordado",
+                    "activa": True,
+                },
+            )
+
+
 def cargar_catalogo_inicial():
     """
     Ejecutar una vez desde Django shell.
@@ -790,6 +1061,8 @@ def cargar_catalogo_inicial():
                     if creada:
                         plantilla.save()
 
+    cargar_vestido_en_tienda()
+
 
 class ReservaOperacion(models.Model):
     """
@@ -806,6 +1079,14 @@ class ReservaOperacion(models.Model):
     contrato = models.ForeignKey(
         "Contrato",
         on_delete=models.PROTECT,
+        related_name="reservas_produccion",
+    )
+    # Vestido del contrato al que corresponde la reserva.
+    vestido = models.ForeignKey(
+        "VestidoContrato",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="reservas_produccion",
     )
     trabajadora = models.ForeignKey(
@@ -846,11 +1127,12 @@ class ReservaOperacion(models.Model):
             models.UniqueConstraint(
                 fields=[
                     "contrato",
+                    "vestido",
                     "trabajadora",
                     "plantilla",
                     "fecha",
                 ],
-                name="reserva_unica_por_contrato_persona_operacion_dia",
+                name="reserva_unica_vestido_persona_operacion_dia",
             )
         ]
         indexes = [

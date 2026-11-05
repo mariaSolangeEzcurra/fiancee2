@@ -101,8 +101,11 @@ def dependencias_completadas(reserva):
     dependencias = reserva.plantilla.depende_de.all()
 
     for plantilla_anterior in dependencias:
+        # Se compara dentro del mismo vestido (reservas antiguas
+        # sin vestido se siguen comparando por contrato).
         completada = ReservaOperacion.objects.filter(
             contrato=reserva.contrato,
+            vestido=reserva.vestido,
             plantilla=plantilla_anterior,
             estado=ReservaOperacion.Estado.COMPLETADA,
         ).exists()
@@ -115,8 +118,8 @@ def dependencias_completadas(reserva):
 
 def serializar_reserva(reserva):
     contrato = reserva.contrato
-    simulacion = contrato.simulacion
-    cliente = simulacion.cliente
+    cliente = contrato.cliente
+    vestido = reserva.vestido
     plantilla = reserva.plantilla
     operacion = plantilla.operacion
 
@@ -130,8 +133,14 @@ def serializar_reserva(reserva):
         "vestido": {
             "contrato_id": contrato.id,
             "numero": contrato.numero,
-            "cliente": str(cliente),
-            "tipo": str(simulacion.tipo_vestido),
+            "vestido_id": reserva.vestido_id,
+            "codigo": vestido.codigo if vestido else None,
+            "cliente": str(cliente) if cliente else "",
+            "tipo": (
+                str(vestido.tipo_vestido)
+                if vestido and vestido.tipo_vestido_id
+                else str(plantilla.ruta.tipo_vestido)
+            ),
         },
         "proceso": {
             "plantilla_id": plantilla.id,
@@ -359,9 +368,9 @@ class MisTrabajosView(APIView):
             plantilla__operacion__activa=True,
         ).select_related(
             "contrato",
-            "contrato__simulacion",
-            "contrato__simulacion__cliente",
-            "contrato__simulacion__tipo_vestido",
+            "contrato__cliente",
+            "vestido__tipo_vestido",
+            "plantilla__ruta__tipo_vestido",
             "plantilla",
             "plantilla__operacion",
         ).order_by("fecha", "plantilla__orden")
@@ -803,9 +812,9 @@ class MiHistorialTallerView(APIView):
         ).select_related(
             "reserva",
             "reserva__contrato",
-            "reserva__contrato__simulacion",
-            "reserva__contrato__simulacion__cliente",
-            "reserva__contrato__simulacion__tipo_vestido",
+            "reserva__contrato__cliente",
+            "reserva__vestido__tipo_vestido",
+            "reserva__plantilla__ruta__tipo_vestido",
             "reserva__plantilla",
             "reserva__plantilla__operacion",
         ).order_by("-inicio")
@@ -828,7 +837,7 @@ class MiHistorialTallerView(APIView):
         for sesion in sesiones:
             reserva = sesion.reserva
             contrato = reserva.contrato
-            simulacion = contrato.simulacion
+            vestido = reserva.vestido
             operacion = reserva.plantilla.operacion
 
             historial_sesiones.append({
@@ -838,8 +847,13 @@ class MiHistorialTallerView(APIView):
                 "vestido": {
                     "contrato_id": contrato.id,
                     "numero": contrato.numero,
-                    "cliente": str(simulacion.cliente),
-                    "tipo": str(simulacion.tipo_vestido),
+                    "codigo": vestido.codigo if vestido else None,
+                    "cliente": str(contrato.cliente) if contrato.cliente_id else "",
+                    "tipo": (
+                        str(vestido.tipo_vestido)
+                        if vestido and vestido.tipo_vestido_id
+                        else str(reserva.plantilla.ruta.tipo_vestido)
+                    ),
                 },
                 "proceso": {
                     "nombre": operacion.nombre,
@@ -905,11 +919,13 @@ class VestidosDisponiblesView(APIView):
         vestidos = VestidoContrato.objects.filter(
             estado=VestidoContrato.Estado.PENDIENTE,
             contrato__estado__in=["ACTIVO", "EN_PRODUCCION"],
+            # Solo los ítems que pasan por el taller.
+            ruta__isnull=False,
         ).select_related(
             "contrato",
-            "contrato__simulacion",
-            "contrato__simulacion__cliente",
-            "contrato__simulacion__tipo_vestido",
+            "contrato__cliente",
+            "tipo_vestido",
+            "ruta",
         ).order_by(
             "contrato__numero",
             "numero",
@@ -927,8 +943,7 @@ class VestidosDisponiblesView(APIView):
 
         for vestido in vestidos.distinct():
             contrato = vestido.contrato
-            simulacion = contrato.simulacion
-            cliente = simulacion.cliente
+            cliente = contrato.cliente
 
             resultado.append({
                 "id": vestido.id,
@@ -938,8 +953,14 @@ class VestidosDisponiblesView(APIView):
                 "estado": vestido.estado,
                 "contrato": contrato.numero,
                 "contrato_id": contrato.id,
-                "cliente": cliente.nombre,
-                "tipo_vestido": str(simulacion.tipo_vestido),
+                "cliente": cliente.nombre if cliente else "",
+                "tipo_vestido": (
+                    str(vestido.tipo_vestido)
+                    if vestido.tipo_vestido_id
+                    else vestido.descripcion
+                ),
+                "taller": vestido.taller,
+                "descripcion": vestido.descripcion,
                 "fecha_entrega": contrato.fecha_entrega,
             })
 

@@ -4,14 +4,13 @@ const API_URL = (
 ).replace(/\/+$/, '');
 
 // Esta ruta es relativa a VITE_API_URL.
-// Ejemplo: API_URL=/api y REFRESH_PATH=/auth/token/refresh/
 const REFRESH_PATH = (
   import.meta.env.VITE_TOKEN_REFRESH_PATH ||
-  '/auth/token/refresh/'
+  '/auth/refresh/'
 ).startsWith('/')
   ? (
       import.meta.env.VITE_TOKEN_REFRESH_PATH ||
-      '/auth/token/refresh/'
+      '/auth/refresh/'
     )
   : `/${import.meta.env.VITE_TOKEN_REFRESH_PATH}`;
 

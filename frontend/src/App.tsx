@@ -11,7 +11,7 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute';
 
 import { FioHome } from './pages/fio/FioHome';
 import { Simulator } from './pages/fio/Simulator';
-import { Contracts } from './pages/fio/Contracts';
+import { Contracts } from './pages/contracts/Contracts';
 import { FioSummary } from './pages/fio/FioSummary';
 
 import { Finance } from './pages/shared/Finance';

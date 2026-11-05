@@ -1,3 +1,4 @@
+
 const API_URL = (
   import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 ).replace(/\/+$/, '');
@@ -17,17 +18,23 @@ async function requestTaller<T>(
     throw new Error('Tu sesión ha vencido. Inicia sesión nuevamente.');
   }
 
-  const response = await fetch(`${TALLER_URL}${endpoint}`, {
-    method,
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    ...(method === 'POST'
-      ? { body: JSON.stringify(body ?? {}) }
-      : {}),
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${TALLER_URL}${endpoint}`, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      ...(method === 'POST'
+        ? { body: JSON.stringify(body ?? {}) }
+        : {}),
+    });
+  } catch {
+    throw new Error('No se pudo conectar con el servidor.');
+  }
 
   const data = await response.json().catch(() => null);
 
@@ -43,7 +50,7 @@ async function requestTaller<T>(
   return data as T;
 }
 
-// ─── Tipos ─────────────────────────────────────────────
+// ─── Tipos: asistencia ─────────────────────────────────
 
 export interface AsistenciaTrabajadora {
   id: number;
@@ -74,6 +81,8 @@ export interface PanelTaller {
   sesion_activa: SesionActivaTaller | null;
 }
 
+// ─── Tipos: disponibilidad ─────────────────────────────
+
 export interface DisponibilidadTrabajadora {
   id: number;
   dia_semana: number;
@@ -86,6 +95,8 @@ export interface MiDisponibilidadTaller {
   total_dias_configurados: number;
   disponibilidad: DisponibilidadTrabajadora[];
 }
+
+// ─── Tipos: ausencias ──────────────────────────────────
 
 export interface AusenciaTrabajadora {
   id: number;
@@ -100,6 +111,8 @@ export interface MisAusenciasTaller {
   total: number;
   ausencias: AusenciaTrabajadora[];
 }
+
+// ─── Tipos: historial ──────────────────────────────────
 
 export interface RegistroHistorialTaller {
   id: number;
@@ -151,6 +164,8 @@ export interface HistorialTaller {
   };
 }
 
+// ─── Tipos: resumen ────────────────────────────────────
+
 export interface ResumenTaller {
   semana: {
     desde: string;
@@ -162,6 +177,8 @@ export interface ResumenTaller {
   procesos_trabajados: string[];
   procesos_completados: number;
 }
+
+// ─── Tipos: trabajos anteriores ────────────────────────
 
 export interface TrabajoTaller {
   id: number;
@@ -209,6 +226,58 @@ export interface RespuestaOperacionTaller {
     horas_pendientes: number | string;
   };
   sesion_activa_id?: number;
+}
+
+// ─── Tipos: vestidos disponibles ───────────────────────
+
+export interface VestidoDisponible {
+  id: number;
+  vestido_id: number;
+  numero: number;
+  codigo: string;
+  estado: string;
+  contrato: string;
+  contrato_id: number;
+  cliente?: string;
+  tipo_vestido?: string;
+  fecha_entrega?: string;
+}
+// ─── Tipos: sesiones de vestidos ───────────────────────
+
+export type EstadoSesionVestido =
+  | 'EN_CURSO'
+  | 'PAUSADA'
+  | 'FINALIZADA';
+
+export interface SesionVestido {
+  id: number;
+  vestido_id: number;
+  codigo: string;
+  contrato: string;
+  inicio: string;
+  fin: string | null;
+  estado: EstadoSesionVestido;
+  horas_efectivas: number | string;
+  observaciones: string;
+}
+
+export interface RespuestaSesionVestido {
+  detail: string;
+  sesion: SesionVestido;
+}
+
+export interface ResumenDiarioVestidos {
+  fecha: string;
+  asistencia: {
+    id: number;
+    entrada: string;
+    salida: string | null;
+    horas_trabajadas: number | string;
+  } | null;
+  total_vestidos: number;
+  horas_efectivas: number | string;
+  vestidos?: SesionVestido[];
+  sesiones?: SesionVestido[];
 }
 
 // ─── Panel ─────────────────────────────────────────────
@@ -277,17 +346,17 @@ export function obtenerMiResumen(): Promise<ResumenTaller> {
   return requestTaller<ResumenTaller>('/mi-resumen/');
 }
 
-// ─── Trabajos asignados ────────────────────────────────
+// ─── Trabajos asignados (sistema anterior) ─────────────
 
 export async function obtenerMisTrabajos(): Promise<TrabajoTaller[]> {
   const respuesta = await requestTaller<ListaTrabajosTaller>(
     '/mis-trabajos/'
   );
 
-  return respuesta.trabajos;
+  return respuesta.trabajos ?? [];
 }
 
-// ─── Sesiones de trabajo ───────────────────────────────
+// ─── Sesiones de trabajo (sistema anterior) ────────────
 
 export function iniciarSesionTrabajo(
   reservaId: number,
@@ -315,5 +384,77 @@ export function finalizarSesionTrabajo(
       observaciones,
       completar,
     }
+  );
+}
+
+// ─── Vestidos disponibles ──────────────────────────────
+
+export async function obtenerVestidosDisponibles(): Promise<VestidoDisponible[]> {
+  // El backend devuelve directamente un array, no { total, vestidos }.
+  const respuesta = await requestTaller<VestidoDisponible[]>(
+    '/vestidos-disponibles/'
+  );
+
+  return Array.isArray(respuesta) ? respuesta : [];
+}
+
+// ─── Iniciar sesión de vestido ─────────────────────────
+
+export function iniciarSesionVestido(
+  vestidoId: number,
+  observaciones = ''
+): Promise<RespuestaSesionVestido> {
+  return requestTaller<RespuestaSesionVestido>(
+    '/sesiones-vestido/iniciar/',
+    'POST',
+    {
+      vestido_id: vestidoId,
+      observaciones,
+    }
+  );
+}
+
+// ─── Pausar sesión de vestido ──────────────────────────
+
+export function pausarSesionVestido(
+  sesionId: number,
+  motivo = ''
+): Promise<RespuestaSesionVestido> {
+  return requestTaller<RespuestaSesionVestido>(
+    `/sesiones-vestido/${sesionId}/pausar/`,
+    'POST',
+    { motivo }
+  );
+}
+
+// ─── Reanudar sesión de vestido ────────────────────────
+
+export function reanudarSesionVestido(
+  sesionId: number
+): Promise<RespuestaSesionVestido> {
+  return requestTaller<RespuestaSesionVestido>(
+    `/sesiones-vestido/${sesionId}/reanudar/`,
+    'POST'
+  );
+}
+
+// ─── Finalizar sesión de vestido ───────────────────────
+
+export function finalizarSesionVestido(
+  sesionId: number,
+  observaciones = ''
+): Promise<RespuestaSesionVestido> {
+  return requestTaller<RespuestaSesionVestido>(
+    `/sesiones-vestido/${sesionId}/finalizar/`,
+    'POST',
+    { observaciones }
+  );
+}
+
+// ─── Resumen diario de vestidos ────────────────────────
+
+export function obtenerResumenDiarioVestidos(): Promise<ResumenDiarioVestidos> {
+  return requestTaller<ResumenDiarioVestidos>(
+    '/mi-resumen-diario/'
   );
 }

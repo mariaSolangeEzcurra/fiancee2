@@ -17,4 +17,5 @@ urlpatterns = [
         CapacidadProduccionView.as_view(),
         name="capacidad-produccion",
     ),
+    path("contratos/", include("core.contratos.urls")),
 ]
