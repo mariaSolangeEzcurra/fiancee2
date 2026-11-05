@@ -587,3 +587,6 @@ export function matchCatalogDress(
   const target = normalize(corte);
   return catalog.find((v) => normalize(v.nombre) === target || target.includes(normalize(v.nombre)));
 }
+
+/** Cliente HTTP compartido (JWT + errores legibles). */
+export { request as apiRequest };

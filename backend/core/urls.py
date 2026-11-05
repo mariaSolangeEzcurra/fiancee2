@@ -18,4 +18,5 @@ urlpatterns = [
         name="capacidad-produccion",
     ),
     path("contratos/", include("core.contratos.urls")),
+    path("produccion/", include("core.produccion.urls")),
 ]

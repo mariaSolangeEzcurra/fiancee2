@@ -12,3 +12,6 @@ __pycache__/
 
 # Base de datos local
 backend/db.sqlite3
+
+__pycache__/
+*.py[cod]

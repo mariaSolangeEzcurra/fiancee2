@@ -68,6 +68,7 @@ class CapacidadTaller:
             t.id: {h.dia_semana: h.horas_disponibles for h in t.horarios.all()}
             for t in self.trabajadoras
         }
+        self.nombres = {t.id: t.nombre for t in self.trabajadoras}
         self.habilidades = {
             t.id: {op.id for op in t.habilidades.all()}
             for t in self.trabajadoras
@@ -119,6 +120,47 @@ class CapacidadTaller:
             t for t in self.trabajadoras
             if t.area == operacion.area_responsable
         ]
+
+
+def asignar_horas(capacidad, habilitadas, horas, inicio):
+    """
+    Reparte `horas` entre las trabajadoras habilitadas desde `inicio`,
+    día a día, consumiendo la capacidad. Prioriza a quien ya empezó la
+    operación y luego a quien tenga más horas libres ese día.
+
+    Devuelve (asignaciones [((trabajadora_id, dia), horas)],
+    horas_pendientes, primer_dia, ultimo_dia).
+    """
+    asignaciones = []
+    pendientes = _q(horas)
+    primer_dia = None
+    ultimo_dia = None
+    preferida = None
+    dia = inicio
+
+    while pendientes > 0 and habilitadas and dia <= capacidad.hasta:
+        orden = sorted(
+            habilitadas,
+            key=lambda t: (t.id != preferida, -capacidad.disponible(t.id, dia)),
+        )
+        for trabajadora in orden:
+            libre = capacidad.disponible(trabajadora.id, dia)
+            if libre < CENTIMO:
+                continue
+            tomar = _q(min(libre, pendientes))
+            if tomar < CENTIMO:
+                continue
+            capacidad.consumir(trabajadora.id, dia, tomar)
+            pendientes -= tomar
+            preferida = preferida or trabajadora.id
+            primer_dia = primer_dia or dia
+            ultimo_dia = dia
+            asignaciones.append(((trabajadora.id, dia), tomar))
+            if pendientes <= 0:
+                break
+        dia += timedelta(days=1)
+
+    return asignaciones, max(CERO, pendientes), primer_dia, ultimo_dia
 
 
 def liberar_reservas_vestido(vestido):
@@ -265,54 +307,25 @@ def planificar_vestido(vestido, capacidad, fecha_inicio):
 
         else:
             total_trabajo += horas
-            pendientes = horas
             habilitadas = capacidad.habilitadas_para(plantilla.operacion)
-            ultimo_dia = inicio
-            primer_dia = None
-
             if not habilitadas:
                 resultado["advertencias"].append(
                     f"{plantilla.operacion.nombre}: no hay trabajadoras "
                     "activas con esa habilidad o área."
                 )
 
-            dia = inicio
-            preferida = None
-            while pendientes > 0 and habilitadas and dia <= capacidad.hasta:
-                # Se prioriza a quien ya viene haciendo la operación
-                # y luego a quien tenga más horas libres ese día.
-                orden = sorted(
-                    habilitadas,
-                    key=lambda t: (
-                        t.id != preferida,
-                        -capacidad.disponible(t.id, dia),
-                    ),
-                )
-                for trabajadora in orden:
-                    libre = capacidad.disponible(trabajadora.id, dia)
-                    if libre < CENTIMO:
-                        continue
-                    tomar = _q(min(libre, pendientes))
-                    if tomar < CENTIMO:
-                        continue
-
-                    capacidad.consumir(trabajadora.id, dia, tomar)
-                    pendientes -= tomar
-                    preferida = preferida or trabajadora.id
-                    primer_dia = primer_dia or dia
-                    ultimo_dia = dia
-
-                    clave = (trabajadora.id, plantilla.id, dia)
-                    reservas_nuevas[clave] = reservas_nuevas.get(clave, CERO) + tomar
-                    detalle["asignaciones"].append({
-                        "trabajadora_id": trabajadora.id,
-                        "trabajadora": trabajadora.nombre,
-                        "fecha": dia,
-                        "horas": str(tomar),
-                    })
-                    if pendientes <= 0:
-                        break
-                dia += timedelta(days=1)
+            asignadas, pendientes, primer_dia, ultimo_dia = asignar_horas(
+                capacidad, habilitadas, horas, inicio
+            )
+            for (trabajadora_id, dia), tomar in asignadas:
+                clave = (trabajadora_id, plantilla.id, dia)
+                reservas_nuevas[clave] = reservas_nuevas.get(clave, CERO) + tomar
+                detalle["asignaciones"].append({
+                    "trabajadora_id": trabajadora_id,
+                    "trabajadora": capacidad.nombres[trabajadora_id],
+                    "fecha": dia,
+                    "horas": str(tomar),
+                })
 
             if pendientes > 0:
                 total_sin_asignar += pendientes
@@ -325,8 +338,8 @@ def planificar_vestido(vestido, capacidad, fecha_inicio):
                     )
 
             detalle["inicio"] = primer_dia or inicio
-            detalle["fin"] = ultimo_dia
-            fin_por_plantilla[plantilla.id] = ultimo_dia
+            detalle["fin"] = ultimo_dia or inicio
+            fin_por_plantilla[plantilla.id] = ultimo_dia or inicio
 
         resultado["operaciones"].append(detalle)
         anterior = plantilla
@@ -400,9 +413,14 @@ def planificar_vestidos(contrato, vestidos):
     if not pendientes:
         return planes
 
+    # Import local para evitar dependencia circular.
+    from core.services.produccion import generar_pasos
+
     capacidad = CapacidadTaller(fecha_inicio)
     for vestido in pendientes:
         planes.append(planificar_vestido(vestido, capacidad, fecha_inicio))
+        # Línea de producción del vestido (pasos + entrega).
+        generar_pasos(vestido, forzar=True)
 
     return planes
 

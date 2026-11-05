@@ -26,6 +26,13 @@ from core.models import (
 )
 
 
+from core.services.produccion import (  # noqa: E402
+    asegurar_pasos,
+    iniciar_paso,
+    paso_actual,
+)
+
+
 class ObservacionesRequestSerializer(serializers.Serializer):
     observaciones = serializers.CharField(
         required=False,
@@ -892,6 +899,8 @@ def serializar_sesion_vestido(sesion):
     return {
         "id": sesion.id,
         "vestido_id": sesion.vestido_id,
+        "paso_id": sesion.paso_id,
+        "proceso": sesion.paso.nombre if sesion.paso_id else None,
         "codigo": sesion.vestido.codigo,
         "contrato": sesion.vestido.contrato.numero,
         "inicio": sesion.inicio,
@@ -916,8 +925,14 @@ class VestidosDisponiblesView(APIView):
     permission_classes = [EsPersonalTaller]
 
     def get(self, request):
+        trabajadora = obtener_trabajadora(request)
+        mis_operaciones = set(trabajadora.habilidades.values_list("id", flat=True))
+
         vestidos = VestidoContrato.objects.filter(
-            estado=VestidoContrato.Estado.PENDIENTE,
+            estado__in=[
+                VestidoContrato.Estado.PENDIENTE,
+                VestidoContrato.Estado.EN_PROCESO,
+            ],
             contrato__estado__in=["ACTIVO", "EN_PRODUCCION"],
             # Solo los ítems que pasan por el taller.
             ruta__isnull=False,
@@ -945,6 +960,12 @@ class VestidosDisponiblesView(APIView):
             contrato = vestido.contrato
             cliente = contrato.cliente
 
+            asegurar_pasos(vestido)
+            paso = paso_actual(vestido)
+            # La entrega la registra la jefa de taller.
+            if paso is None or paso.es_entrega:
+                continue
+
             resultado.append({
                 "id": vestido.id,
                 "vestido_id": vestido.id,
@@ -961,9 +982,21 @@ class VestidosDisponiblesView(APIView):
                 ),
                 "taller": vestido.taller,
                 "descripcion": vestido.descripcion,
-                "fecha_entrega": contrato.fecha_entrega,
+                "fecha_entrega": vestido.fecha_limite_efectiva,
+                "prioridad": vestido.prioridad,
+                "paso_actual": vestido.paso_actual,
+                "proceso_actual": paso.nombre,
+                "area_proceso": paso.area,
+                "horas_estimadas_proceso": paso.horas_estimadas,
+                "es_de_mi_area": (
+                    paso.plantilla is not None
+                    and paso.plantilla.operacion_id in mis_operaciones
+                ),
+                "asignada_a_mi": paso.trabajadoras.filter(pk=trabajadora.pk).exists(),
             })
 
+        # Primero lo asignado a ella y lo de su área.
+        resultado.sort(key=lambda v: (not v["asignada_a_mi"], not v["es_de_mi_area"]))
         return Response(resultado)
 
 
@@ -1030,9 +1063,23 @@ class IniciarSesionVestidoView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if vestido.estado != VestidoContrato.Estado.PENDIENTE:
+        if vestido.estado == VestidoContrato.Estado.FINALIZADO:
             return Response(
-                {"detail": "Este vestido ya no está disponible."},
+                {"detail": "Este vestido ya está terminado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not vestido.ruta_id:
+            return Response(
+                {"detail": "Este ítem no pasa por el taller."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        asegurar_pasos(vestido)
+        paso = paso_actual(vestido)
+        if paso is None or paso.es_entrega:
+            return Response(
+                {"detail": "El vestido está listo para entrega."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1054,17 +1101,17 @@ class IniciarSesionVestidoView(APIView):
             trabajadora=trabajadora,
             jornada=jornada,
             vestido=vestido,
+            paso=paso,
             inicio=timezone.now(),
             estado=SesionVestido.Estado.EN_CURSO,
             observaciones=observaciones,
         )
 
-        vestido.estado = VestidoContrato.Estado.EN_PROCESO
-        vestido.save(update_fields=["estado"])
+        iniciar_paso(vestido, trabajadora)
 
         return Response(
             {
-                "detail": "Trabajo del vestido iniciado correctamente.",
+                "detail": f"Trabajo iniciado: {paso.nombre}.",
                 "sesion": serializar_sesion_vestido(sesion),
             },
             status=status.HTTP_201_CREATED,
@@ -1204,12 +1251,15 @@ class FinalizarSesionVestidoView(APIView):
             update_fields=["fin", "estado", "observaciones"]
         )
 
-        vestido = sesion.vestido
-        vestido.estado = VestidoContrato.Estado.FINALIZADO
-        vestido.save(update_fields=["estado"])
+        # La trabajadora solo termina SU sesión de trabajo. El proceso
+        # sigue abierto (otra persona puede continuarlo) y solo la jefa
+        # de taller lo marca como terminado.
+        horas = round(float(sesion.horas_efectivas), 2)
+        proceso = sesion.paso.nombre if sesion.paso_id else "el vestido"
 
         return Response({
-            "detail": "Vestido finalizado correctamente.",
+            "detail": f"Sesión finalizada: registraste {horas} h en {proceso}.",
+            "horas_efectivas": horas,
             "sesion": serializar_sesion_vestido(sesion),
         })
 

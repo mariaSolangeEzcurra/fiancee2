@@ -300,6 +300,7 @@ def _aplicar_items(contrato, items, permitir_borrar):
                 a_planificar.append(vestido)
             else:
                 liberar_reservas_vestido(vestido)
+                vestido.pasos.all().delete()
 
     if permitir_borrar:
         for vestido_id, vestido in existentes.items():

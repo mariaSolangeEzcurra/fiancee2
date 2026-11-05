@@ -39,7 +39,6 @@ export const navigation: Record<Role, NavItem[]> = {
   jefa: [
   { label: 'Inicio', path: '/taller', icon: HomeIcon, end: true },
   { label: 'Vestidos', path: '/taller/vestidos', icon: ShirtIcon },
-  { label: 'Cola de producción', path: '/taller/cola', icon: ListOrderedIcon },
   { label: 'Capacidad', path: '/taller/capacidad', icon: CalendarRangeIcon },
   { label: 'Personal', path: '/taller/personal', icon: UsersIcon },
   { label: 'Alertas', path: '/taller/alertas', icon: TriangleAlertIcon },

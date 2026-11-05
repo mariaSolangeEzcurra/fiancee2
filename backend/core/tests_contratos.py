@@ -26,7 +26,7 @@ from core.models import (
 URL = "/api/core/contratos/"
 
 
-class ContratosTestCase(TestCase):
+class BaseContratos(TestCase):
     @classmethod
     def setUpTestData(cls):
         cargar_catalogo_inicial()
@@ -92,7 +92,8 @@ class ContratosTestCase(TestCase):
         self.assertEqual(r.status_code, 201, r.data)
         return r.data
 
-    # --------------------------------------------------------
+
+class ContratosTestCase(BaseContratos):
 
     def test_crear_contrato_manual_completo(self):
         data = self.crear()
@@ -273,7 +274,7 @@ class ContratosTestCase(TestCase):
         self.assertEqual(r.status_code, 200, getattr(r, "data", None))
 
 
-class VestidoEnTiendaTestCase(ContratosTestCase):
+class VestidoEnTiendaTestCase(BaseContratos):
     def setUp(self):
         super().setUp()
         self.tienda = TipoVestido.objects.get(nombre="Vestido en tienda")
@@ -356,3 +357,182 @@ class VestidoEnTiendaTestCase(ContratosTestCase):
                                       "procesos": [{"plantilla": bordado.id, "horas": "0", "incluido": False}]}], adelantos=[])
         v = data["contrato"]["vestidos"][0]
         self.assertFalse(ReservaOperacion.objects.filter(vestido_id=v["id"], plantilla=bordado).exists())
+
+
+class ProduccionTestCase(BaseContratos):
+    """Del contrato a la línea de producción de cada vestido."""
+
+    P = "/api/core/produccion/vestidos/"
+
+    def setUp(self):
+        super().setUp()
+        self.jefa_api = APIClient()
+        self.jefa_api.force_authenticate(self.jefa)
+        c = self.crear(adelantos=[])["contrato"]
+        self.contrato_id = c["id"]
+        self.v1 = c["vestidos"][0]  # Sirena, Taller A
+        self.v2 = c["vestidos"][1]  # Minimalista, Taller C
+
+    def get(self, vid):
+        r = self.jefa_api.get(f"{self.P}{vid}/")
+        self.assertEqual(r.status_code, 200, r.data)
+        return r.data["dress"]
+
+    def test_lista_para_jefa_con_pasos(self):
+        r = self.jefa_api.get(self.P)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data), 2)  # el velo sin taller no aparece
+        d = next(x for x in r.data if x["vestidoId"] == self.v1["id"])
+        self.assertEqual(d["workshop"], "Taller A")
+        self.assertEqual(d["status"], "En cola")
+        self.assertEqual(d["currentIndex"], 0)
+        self.assertEqual(d["steps"][0]["process"], "compra materiales")
+        self.assertTrue(d["steps"][-1]["isDelivery"])
+        self.assertEqual(d["client"], "María Pérez")
+        # gerencia puede leer, el taller no
+        g = APIClient(); g.force_authenticate(get_user_model().objects.create_user("g", password="x", rol="gerencia"))
+        self.assertEqual(g.get(self.P).status_code, 200)
+        self.assertEqual(g.post(f"{self.P}{self.v1['id']}/completar-paso/").status_code, 403)
+
+    def test_pasos_respetan_tiempos_ajustados(self):
+        tienda = TipoVestido.objects.get(nombre="Vestido en tienda")
+        ruta = RutaProduccion.objects.get(tipo_vestido=tienda)
+        lav = ruta.operaciones.get(operacion__nombre="lavandería")
+        ent = ruta.operaciones.get(operacion__nombre="entalle")
+        c = self.crear(adelantos=[], datos_cliente={"nombre": "X", "documento": "999"}, vestidos=[
+            {"tipo_vestido": tienda.id, "taller": "T", "precio": "500",
+             "procesos": [{"plantilla": lav.id, "horas": "0", "incluido": False},
+                          {"plantilla": ent.id, "horas": "3"}]}])["contrato"]
+        d = self.get(c["vestidos"][0]["id"])
+        nombres = [s["process"] for s in d["steps"]]
+        self.assertNotIn("lavandería", nombres)
+        self.assertEqual(next(s for s in d["steps"] if s["process"] == "entalle")["estHours"], 3.0)
+        self.assertEqual(d["workshop"], "Tienda")
+
+    def test_jefa_avanza_hasta_terminar(self):
+        vid = self.v2["id"]
+        d = self.get(vid)
+        n = len(d["steps"])
+        r = self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["dress"]["currentIndex"], 1)
+        self.assertEqual(r.data["dress"]["status"], "En producción")
+        self.assertTrue(r.data["dress"]["steps"][0]["done"])
+        self.assertEqual(Contrato.objects.get(pk=self.contrato_id).estado, "EN_PRODUCCION")
+        for _ in range(n - 1):
+            r = self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
+        self.assertEqual(r.data["dress"]["status"], "Terminado")
+        self.assertEqual(self.jefa_api.post(f"{self.P}{vid}/completar-paso/").status_code, 400)
+        # Volver a un proceso lo reabre
+        r = self.jefa_api.post(f"{self.P}{vid}/paso-actual/", {"index": 2}, format="json")
+        self.assertEqual(r.data["dress"]["status"], "En producción")
+        self.assertFalse(r.data["dress"]["steps"][2]["done"])
+
+    def test_completar_paso_libera_reservas_futuras(self):
+        vid = self.v1["id"]
+        d = self.get(vid)
+        plantilla_id = VestidoContrato.objects.get(pk=vid).pasos.get(orden=0).plantilla_id
+        self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
+        qs = ReservaOperacion.objects.filter(vestido_id=vid, plantilla_id=plantilla_id)
+        self.assertFalse(qs.filter(estado="RESERVADA").exists())
+        self.assertFalse(qs.filter(estado="CANCELADA", fecha__lte=self.hoy).exists())
+
+    def test_horas_trabajadoras_fecha_prioridad_notas(self):
+        vid = self.v1["id"]
+        # horas: patronaje (índice 1) a 20 h → reservas reprogramadas
+        r = self.jefa_api.patch(f"{self.P}{vid}/pasos/1/", {"estHours": "20"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["dress"]["steps"][1]["estHours"], 20.0)
+        paso = VestidoContrato.objects.get(pk=vid).pasos.get(orden=1)
+        total = ReservaOperacion.objects.filter(vestido_id=vid, plantilla=paso.plantilla).exclude(
+            estado="CANCELADA").aggregate(s=Sum("horas_reservadas"))["s"]
+        self.assertEqual(total, Decimal("20.00"))
+        # trabajadora (alternar)
+        t = Trabajadora.objects.first()
+        r = self.jefa_api.post(f"{self.P}{vid}/pasos/1/trabajadoras/", {"workerId": t.id}, format="json")
+        self.assertIn(str(t.id), r.data["dress"]["steps"][1]["workerIds"])
+        r = self.jefa_api.post(f"{self.P}{vid}/pasos/1/trabajadoras/", {"workerId": t.id}, format="json")
+        self.assertNotIn(str(t.id), r.data["dress"]["steps"][1]["workerIds"])
+        # fecha límite y prioridad
+        nueva = str(self.hoy + timedelta(days=100))
+        r = self.jefa_api.patch(f"{self.P}{vid}/", {"deadline": nueva, "priority": "Alta"}, format="json")
+        self.assertEqual(str(r.data["dress"]["deadline"]), nueva)
+        self.assertEqual(r.data["dress"]["priority"], "Alta")
+        # nota
+        r = self.jefa_api.post(f"{self.P}{vid}/notas/", {"kind": "incidencia", "text": "Falta forro"}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.data["dress"]["notes"][0]["kind"], "incidencia")
+        # trabajadoras
+        r = self.jefa_api.get("/api/core/produccion/trabajadoras/")
+        self.assertTrue(r.data and "areas" in r.data[0])
+
+    def test_trabajadora_trabaja_por_procesos(self):
+        from core.models import RegistroAsistencia
+        taller = APIClient(); taller.force_authenticate(self.user_taller)
+        RegistroAsistencia.objects.create(trabajadora=self.trab_taller, fecha=timezone.localdate(),
+                                          entrada=timezone.now())
+        vid = self.v1["id"]
+        # Saltamos compra/patronaje/corte para llegar a confección
+        for _ in range(3):
+            self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
+        r = taller.get("/api/taller/vestidos-disponibles/")
+        self.assertEqual(r.status_code, 200, r.data)
+        item = next(x for x in r.data if x["id"] == vid)
+        self.assertEqual(item["proceso_actual"], "confección")
+        self.assertTrue(item["es_de_mi_area"])
+
+        r = taller.post("/api/taller/sesiones-vestido/iniciar/", {"vestido_id": vid}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        sid = r.data["sesion"]["id"]
+        d = self.get(vid)
+        self.assertTrue(d["steps"][3]["inProgress"])
+        self.assertIn(str(self.trab_taller.id), d["steps"][3]["workerIds"])
+        self.assertIsNotNone(d["activeSession"])
+
+        r = taller.post(f"/api/taller/sesiones-vestido/{sid}/finalizar/", {"observaciones": "Avancé falda"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        # Terminar la sesión NO termina el proceso: sigue abierto.
+        d = self.get(vid)
+        self.assertFalse(d["steps"][3]["done"])
+        self.assertEqual(d["currentIndex"], 3)
+        self.assertIsNone(d["activeSession"])
+        self.assertEqual(len(d["workLog"]), 1)
+        log = d["workLog"][0]
+        self.assertEqual(log["worker"], self.trab_taller.nombre)
+        self.assertEqual(log["process"], "Confección")
+        self.assertEqual(log["status"], "Finalizada")
+        self.assertEqual(log["notes"], "Avancé falda")
+        self.assertIsNotNone(log["shift"]["checkIn"])
+        self.assertEqual(d["steps"][3]["sessions"][0]["id"], log["id"])
+        self.assertEqual(d["workersSummary"][0]["sessions"], 1)
+
+        # Otra trabajadora continúa el mismo proceso.
+        otra = Trabajadora.objects.get(nombre="CONFECCION-1")
+        otra.usuario = get_user_model().objects.create_user("otra", password="x", rol="taller")
+        otra.save()
+        RegistroAsistencia.objects.create(trabajadora=otra, fecha=timezone.localdate(), entrada=timezone.now())
+        api2 = APIClient(); api2.force_authenticate(otra.usuario)
+        r = api2.post("/api/taller/sesiones-vestido/iniciar/", {"vestido_id": vid}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        d = self.get(vid)
+        self.assertEqual(d["activeSession"]["worker"], "CONFECCION-1")
+        self.assertEqual(d["activeSession"]["status"], "Trabajando")
+        api2.post(f"/api/taller/sesiones-vestido/{r.data['sesion']['id']}/pausar/", {"motivo": "almuerzo"}, format="json")
+        self.assertEqual(self.get(vid)["activeSession"]["status"], "En pausa")
+
+        # Solo la jefa termina el proceso.
+        r = self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
+        self.assertTrue(r.data["dress"]["steps"][3]["done"])
+        self.assertEqual(r.data["dress"]["currentIndex"], 4)
+        self.assertEqual(len(r.data["dress"]["workersSummary"]), 2)
+
+    def test_contrato_editado_regenera_pasos(self):
+        vid = self.v1["id"]
+        r = self.api.patch(f"{URL}{self.contrato_id}/", {"vestidos": [
+            {"id": vid, "tipo_vestido": self.sirena.id, "taller": "C", "precio": "1"},
+            {"id": self.v2["id"], "tipo_vestido": self.mini.id, "taller": "C", "modalidad": "ALQUILER", "precio": "900"},
+        ]}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        d = self.get(vid)
+        self.assertEqual(d["workshop"], "Taller C")
+        self.assertNotIn("patronaje", [s["process"] for s in d["steps"]])

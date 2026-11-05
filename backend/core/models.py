@@ -560,6 +560,23 @@ class VestidoContrato(models.Model):
         validators=[MinValueValidator(Decimal("0"))],
     )
 
+    # Seguimiento de producción (vista de la jefa de taller).
+    class Prioridad(models.TextChoices):
+        ALTA = "ALTA", "Alta"
+        MEDIA = "MEDIA", "Media"
+        BAJA = "BAJA", "Baja"
+
+    prioridad = models.CharField(
+        max_length=5,
+        choices=Prioridad.choices,
+        default=Prioridad.MEDIA,
+    )
+    # Índice (0..n) del paso actual en vestido.pasos ordenados.
+    paso_actual = models.PositiveIntegerField(default=0)
+    # Fecha límite propia del vestido; si es nula se usa la fecha de
+    # recojo del contrato.
+    fecha_limite = models.DateField(null=True, blank=True)
+
     # Resultado de la planificación automática del taller.
     fecha_fin_estimada = models.DateField(null=True, blank=True)
     horas_sin_asignar = models.DecimalField(
@@ -587,6 +604,10 @@ class VestidoContrato(models.Model):
     @property
     def taller(self):
         return self.ruta.taller if self.ruta_id else None
+
+    @property
+    def fecha_limite_efectiva(self):
+        return self.fecha_limite or self.contrato.fecha_entrega
 
     class Meta:
         ordering = ["contrato", "numero"]
@@ -637,6 +658,114 @@ class ProcesoVestidoContrato(models.Model):
 
     def __str__(self):
         return f"{self.vestido.codigo} - {self.plantilla.operacion}: {self.horas} h"
+
+
+class PasoVestido(models.Model):
+    """
+    Paso de la línea de producción de un vestido.
+
+    Se generan a partir de la ruta (con los tiempos ajustados del
+    vestido) más un paso final de entrega.
+    """
+
+    class Estado(models.TextChoices):
+        PENDIENTE = "PENDIENTE", "Pendiente"
+        EN_CURSO = "EN_CURSO", "En curso"
+        COMPLETADO = "COMPLETADO", "Completado"
+
+    vestido = models.ForeignKey(
+        VestidoContrato,
+        on_delete=models.CASCADE,
+        related_name="pasos",
+    )
+    orden = models.PositiveIntegerField()
+    # Nulo solo en el paso final de entrega.
+    plantilla = models.ForeignKey(
+        PlantillaOperacion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="pasos_vestido",
+    )
+    nombre = models.CharField(max_length=120)
+    es_entrega = models.BooleanField(default=False)
+    tipo_tiempo = models.CharField(
+        max_length=10,
+        choices=PlantillaOperacion.TipoTiempo.choices,
+        default=PlantillaOperacion.TipoTiempo.TRABAJO,
+    )
+    area = models.CharField(max_length=15, blank=True)
+    horas_estimadas = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    estado = models.CharField(
+        max_length=12,
+        choices=Estado.choices,
+        default=Estado.PENDIENTE,
+    )
+    trabajadoras = models.ManyToManyField(
+        "Trabajadora",
+        blank=True,
+        related_name="pasos_asignados",
+    )
+    completado_en = models.DateTimeField(null=True, blank=True)
+    completado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["vestido", "orden"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["vestido", "orden"],
+                name="paso_unico_por_vestido_orden",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.vestido.codigo} - {self.orden}. {self.nombre}"
+
+
+class NotaVestido(models.Model):
+    """Observaciones e incidencias registradas sobre un vestido."""
+
+    class Tipo(models.TextChoices):
+        OBSERVACION = "OBSERVACION", "Observación"
+        INCIDENCIA = "INCIDENCIA", "Incidencia"
+
+    vestido = models.ForeignKey(
+        VestidoContrato,
+        on_delete=models.CASCADE,
+        related_name="notas",
+    )
+    tipo = models.CharField(
+        max_length=12,
+        choices=Tipo.choices,
+        default=Tipo.OBSERVACION,
+    )
+    texto = models.TextField()
+    autor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    autor_nombre = models.CharField(max_length=150, blank=True)
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-creado_en", "-id"]
+
+    def __str__(self):
+        return f"{self.vestido.codigo} - {self.get_tipo_display()}"
 
 
 # ============================================================
@@ -1232,6 +1361,15 @@ class SesionVestido(models.Model):
         related_name="sesiones_trabajo",
     )
 
+    # Paso de la línea de producción en el que se trabajó.
+    paso = models.ForeignKey(
+        PasoVestido,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sesiones",
+    )
+
     inicio = models.DateTimeField(default=timezone.now)
     fin = models.DateTimeField(null=True, blank=True)
 
@@ -1288,7 +1426,7 @@ class SesionVestido(models.Model):
         return Decimal(str(segundos_efectivos / 3600))
 
     def __str__(self):
-        return f"{self. vestido.codigo} - {self.trabajadora.nombre}"
+        return f"{self.vestido.codigo} - {self.trabajadora.nombre}"
 
 
 class PausaSesionVestido(models.Model):
