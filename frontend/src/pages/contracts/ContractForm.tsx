@@ -507,8 +507,13 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
 
   const dressById = useMemo(() => new Map(catalog.map((d) => [d.id, d])), [catalog]);
 
-  const total = form.vestidos.reduce((s, v) => s + num(v.precio) + num(v.precio_otros), 0);
-  const pagado = form.adelantos.reduce((s, a) => s + num(a.importe), 0);
+  // Cobros extra y pagos que registró la jefa de taller.
+  const extras = num(original?.total_cargos ?? '0');
+  const otrosPagos = (original?.pagos ?? [])
+    .filter((p) => !p.orden_adelanto)
+    .reduce((s, p) => s + num(p.importe), 0);
+  const total = form.vestidos.reduce((s, v) => s + num(v.precio) + num(v.precio_otros), 0) + extras;
+  const pagado = form.adelantos.reduce((s, a) => s + num(a.importe), 0) + otrosPagos;
   const saldo = total - pagado;
   const enTaller = form.vestidos.filter((v) => v.taller).length;
 
@@ -1153,16 +1158,36 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
             </dl>
 
             <div className="mt-4 space-y-2 border-t border-line pt-4 text-sm">
+              {extras > 0 && <Row label="Cobros extra (taller)" value={money.format(extras)} />}
               <Row label="Monto total" value={money.format(total)} strong />
-              <Row label="Adelantos" value={money.format(pagado)} />
+              <Row label="Adelantos" value={money.format(pagado - otrosPagos)} />
+              {otrosPagos > 0 && <Row label="Pagos recibidos en taller" value={money.format(otrosPagos)} />}
               <Row label="Saldo" value={money.format(saldo)} strong />
               {num(form.garantia) > 0 && <Row label="Garantía" value={money.format(num(form.garantia))} />}
             </div>
 
             {saldo < 0 && (
-              <p className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">Los adelantos superan el monto total.</p>
+              <p className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">Los pagos superan el monto total.</p>
             )}
           </section>
+
+          {original && original.cargos_adicionales.length > 0 && (
+            <section className="rounded-2xl border border-line bg-paper p-5">
+              <h3 className="font-display text-lg font-semibold text-cocoa">Cobros extra del taller</h3>
+              <p className="mt-1 text-xs text-cocoa-muted">Modificaciones pedidas por la clienta. Ya están sumadas al monto total.</p>
+              <ul className="mt-3 space-y-2">
+                {original.cargos_adicionales.map((c) => (
+                  <li key={c.id} className="flex items-start justify-between gap-3 rounded-xl border border-line bg-cream/50 p-3 text-xs">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-cocoa">{c.concepto}</p>
+                      <p className="text-cocoa-muted">{c.vestido_codigo} · {fmtShort(c.fecha)}</p>
+                    </div>
+                    <span className="whitespace-nowrap font-semibold text-cocoa">+{money.format(num(c.monto))}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
           {original && original.vestidos.some((v) => v.taller) && (
             <section className="rounded-2xl border border-line bg-paper p-5">

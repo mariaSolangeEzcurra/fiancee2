@@ -143,10 +143,35 @@ class AdelantoSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class CargoAdicionalSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    vestido = serializers.IntegerField(source="vestido_id")
+    vestido_codigo = serializers.CharField(source="vestido.codigo")
+    concepto = serializers.CharField()
+    descripcion = serializers.CharField()
+    monto = serializers.DecimalField(max_digits=12, decimal_places=2)
+    fecha = serializers.DateField()
+
+
+class PagoSerializer(serializers.ModelSerializer):
+    vestido_codigo = serializers.CharField(source="vestido.codigo", default=None)
+
+    class Meta:
+        model = Pago
+        fields = [
+            "id", "orden_adelanto", "concepto", "importe", "fecha",
+            "metodo", "referencia", "confirmado", "vestido", "vestido_codigo",
+        ]
+        read_only_fields = fields
+
+
 class ContratoSerializer(serializers.ModelSerializer):
     cliente = ClienteSerializer(read_only=True)
     vestidos = VestidoContratoSerializer(many=True, read_only=True)
     adelantos = serializers.SerializerMethodField()
+    pagos = PagoSerializer(many=True, read_only=True)
+    cargos_adicionales = CargoAdicionalSerializer(many=True, read_only=True)
+    total_cargos = serializers.SerializerMethodField()
     estado_display = serializers.CharField(source="get_estado_display", read_only=True)
     tipo_evento_display = serializers.CharField(
         source="get_tipo_evento_display", read_only=True
@@ -187,7 +212,10 @@ class ContratoSerializer(serializers.ModelSerializer):
             "servicio_lavanderia",
             # Montos
             "precio_total",
+            "total_cargos",
+            "cargos_adicionales",
             "adelantos",
+            "pagos",
             "total_pagado",
             "saldo_pendiente",
             "garantia",
@@ -209,6 +237,9 @@ class ContratoSerializer(serializers.ModelSerializer):
 
     def get_origen(self, obj):
         return "SIMULADOR" if obj.simulacion_id else "MANUAL"
+
+    def get_total_cargos(self, obj):
+        return str(sum((c.monto for c in obj.cargos_adicionales.all()), CERO))
 
     def get_asesora_nombre(self, obj):
         if not obj.asesora_id:

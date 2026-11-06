@@ -687,8 +687,18 @@ class PasoVestido(models.Model):
         blank=True,
         related_name="pasos_vestido",
     )
+    # Operación del catálogo (para pasos agregados por la jefa).
+    operacion = models.ForeignKey(
+        Operacion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="pasos_vestido",
+    )
     nombre = models.CharField(max_length=120)
     es_entrega = models.BooleanField(default=False)
+    # Paso agregado por la jefa (prueba extra, ajuste, etc.).
+    es_adicional = models.BooleanField(default=False)
     tipo_tiempo = models.CharField(
         max_length=10,
         choices=PlantillaOperacion.TipoTiempo.choices,
@@ -710,6 +720,15 @@ class PasoVestido(models.Model):
         "Trabajadora",
         blank=True,
         related_name="pasos_asignados",
+    )
+    # La jefa de taller inicia el proceso: desde aquí corre el tiempo.
+    iniciado_en = models.DateTimeField(null=True, blank=True)
+    iniciado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
     )
     completado_en = models.DateTimeField(null=True, blank=True)
     completado_por = models.ForeignKey(
@@ -768,6 +787,68 @@ class NotaVestido(models.Model):
         return f"{self.vestido.codigo} - {self.get_tipo_display()}"
 
 
+class ImagenNotaVestido(models.Model):
+    """Fotos de los cambios o del estado del vestido."""
+
+    nota = models.ForeignKey(
+        NotaVestido,
+        on_delete=models.CASCADE,
+        related_name="imagenes",
+    )
+    archivo = models.ImageField(upload_to="vestidos/%Y/%m/")
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.archivo.name
+
+
+class CargoAdicional(models.Model):
+    """
+    Cobro extra por modificaciones pedidas sobre un vestido.
+    Se suma al costo del vestido y al monto total del contrato.
+    """
+
+    contrato = models.ForeignKey(
+        Contrato,
+        on_delete=models.PROTECT,
+        related_name="cargos_adicionales",
+    )
+    vestido = models.ForeignKey(
+        VestidoContrato,
+        on_delete=models.PROTECT,
+        related_name="cargos_adicionales",
+    )
+    nota = models.ForeignKey(
+        NotaVestido,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cargos",
+    )
+    concepto = models.CharField(max_length=200)
+    descripcion = models.TextField(blank=True)
+    monto = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    fecha = models.DateField(default=timezone.localdate)
+    registrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-fecha", "-id"]
+
+    def __str__(self):
+        return f"{self.vestido.codigo} - {self.concepto}: {self.monto}"
+
+
 # ============================================================
 # 5. FINANZAS
 # ============================================================
@@ -812,6 +893,15 @@ class Pago(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
+    )
+
+    # Vestido sobre el que se registró el pago (desde el taller).
+    vestido = models.ForeignKey(
+        "VestidoContrato",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pagos",
     )
 
     # 1, 2 o 3 si el pago corresponde al primer, segundo o tercer
@@ -1106,7 +1196,14 @@ def cargar_vestido_en_tienda():
                 defaults={
                     "orden": orden,
                     "horas_estimadas": Decimal(str(horas)),
-                    "tipo_tiempo": PlantillaOperacion.TipoTiempo.TRABAJO,
+                    # Mismo tipo de tiempo que el proceso en las demás rutas.
+                    "tipo_tiempo": (
+                        PlantillaOperacion.objects.filter(operacion=operacion)
+                        .exclude(ruta__taller=RutaProduccion.Tipo.TIENDA)
+                        .values_list("tipo_tiempo", flat=True)
+                        .first()
+                        or PlantillaOperacion.TipoTiempo.TRABAJO
+                    ),
                     "obligatoria": nombre != "bordado",
                     "activa": True,
                 },
@@ -1218,6 +1315,14 @@ class ReservaOperacion(models.Model):
         blank=True,
         related_name="reservas_produccion",
     )
+    # Paso de la línea de producción que cubre la reserva.
+    paso = models.ForeignKey(
+        "PasoVestido",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="reservas",
+    )
     trabajadora = models.ForeignKey(
         "Trabajadora",
         on_delete=models.PROTECT,
@@ -1257,11 +1362,12 @@ class ReservaOperacion(models.Model):
                 fields=[
                     "contrato",
                     "vestido",
+                    "paso",
                     "trabajadora",
                     "plantilla",
                     "fecha",
                 ],
-                name="reserva_unica_vestido_persona_operacion_dia",
+                name="reserva_unica_paso_persona_operacion_dia",
             )
         ]
         indexes = [

@@ -12,15 +12,9 @@
 // CONFIGURACIÓN HTTP
 // ============================================================
 
-const API_URL: string =
-  (import.meta as unknown as { env?: Record<string, string> }).env
-    ?.VITE_API_URL ?? 'http://127.0.0.1:8000';
+import { authorizedFetch } from './core';
 
 const CONTRACTS = '/api/core/contratos/';
-
-function getAccessToken(): string | null {
-  return localStorage.getItem('fio_access');
-}
 
 export class ApiError extends Error {
   status: number;
@@ -33,35 +27,53 @@ export class ApiError extends Error {
   }
 }
 
+/** Las rutas se escriben como /api/...; VITE_API_URL ya termina en /api. */
+function relativePath(path: string): string {
+  return path.startsWith('/api/') ? path.slice(4) : path;
+}
+
 async function request<T>(
   path: string,
-  options: { method?: string; body?: unknown; query?: Record<string, string | undefined> } = {}
+  options: {
+    method?: string;
+    body?: unknown;
+    query?: Record<string, string | undefined>;
+  } = {}
 ): Promise<T> {
-  const url = new URL(path, API_URL);
-
+  const params = new URLSearchParams();
   for (const [key, value] of Object.entries(options.query ?? {})) {
-    if (value !== undefined && value !== '') url.searchParams.set(key, value);
+    if (value !== undefined && value !== '') params.set(key, value);
   }
+  const query = params.toString();
 
-  const token = getAccessToken();
-  const response = await fetch(url.toString(), {
-    method: options.method ?? 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
+  const body =
+    options.body === undefined
+      ? undefined
+      : options.body instanceof FormData
+        ? options.body
+        : JSON.stringify(options.body);
+
+  const response = await authorizedFetch(
+    `${relativePath(path)}${query ? `?${query}` : ''}`,
+    { method: options.method ?? 'GET', body }
+  );
 
   const text = await response.text();
-  const data: unknown = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
 
   if (!response.ok) {
-    if (response.status === 401) {
-      throw new ApiError(401, { error: 'Tu sesión expiró. Vuelve a iniciar sesión.' });
-    }
     if (response.status === 403) {
       throw new ApiError(403, { error: 'No tienes permisos para esta acción.' });
+    }
+    if (response.status === 404 && typeof data === 'string') {
+      throw new ApiError(404, {
+        error: 'El servidor no tiene esta ruta. Actualiza el backend y ejecuta las migraciones.',
+      });
     }
     throw new ApiError(response.status, data);
   }
@@ -234,8 +246,20 @@ export interface Contrato {
   fecha_recojo_fotos: string | null;
   fecha_devolucion_fotos: string | null;
   servicio_lavanderia: string;
-  precio_total: string;
+  precio_total: string; // incluye los cobros extra del taller
+  total_cargos: string;
+  cargos_adicionales: {
+    id: number;
+    vestido: number;
+    vestido_codigo: string;
+    concepto: string;
+    descripcion: string;
+    monto: string;
+    fecha: string;
+  }[];
   adelantos: Adelanto[];
+  /** Todos los pagos confirmados (adelantos y pagos recibidos en taller). */
+  pagos: (Adelanto & { vestido: number | null; vestido_codigo: string | null })[];
   total_pagado: string;
   saldo_pendiente: string;
   garantia: string;

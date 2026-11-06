@@ -275,7 +275,7 @@ export default function MyDay() {
           sesionActual.id,
           observaciones.trim()
         ),
-      "Vestido finalizado correctamente."
+      "Terminaste tu sesión. El proceso sigue abierto: la jefa de taller lo da por terminado."
     );
   };
 
@@ -526,7 +526,7 @@ export default function MyDay() {
                     className={primaryButton}
                   >
                     <CheckCircle2 size={16} />
-                    Finalizar
+                    Terminar mi sesión
                   </button>
                 </div>
               </motion.div>
@@ -555,7 +555,11 @@ export default function MyDay() {
 
                       {vestidos.map((vestido) => (
                         <option key={vestido.id} value={vestido.id}>
+                          {vestido.asignada_a_mi ? "★ " : ""}
                           {vestido.codigo}
+                          {vestido.proceso_actual
+                            ? ` · ${vestido.proceso_actual}`
+                            : ""}
                           {vestido.tipo_vestido
                             ? ` · ${vestido.tipo_vestido}`
                             : ""}
@@ -587,10 +591,52 @@ export default function MyDay() {
                                 Contrato: {vestido.contrato}
                               </p>
 
+                              {vestido.proceso_actual && (
+                                <p className="mt-1 text-xs font-medium text-cocoa">
+                                  Proceso: {vestido.proceso_actual}
+                                  {vestido.asignada_a_mi ? " · asignado a ti" : ""}
+                                </p>
+                              )}
+
                               {vestido.fecha_entrega && (
                                 <p className="mt-1 text-xs text-cocoa-muted">
                                   Entrega: {vestido.fecha_entrega}
                                 </p>
+                              )}
+
+                              {(vestido.observaciones ?? []).length > 0 && (
+                                <div className="mt-3 space-y-2 border-t border-line pt-2">
+                                  <p className="text-xs font-semibold text-cocoa">
+                                    Observaciones y cambios
+                                  </p>
+                                  {(vestido.observaciones ?? []).map((nota) => (
+                                    <div key={nota.id} className="text-xs">
+                                      <p className="text-cocoa">
+                                        {nota.tipo === "INCIDENCIA" ? "⚠ " : ""}
+                                        {nota.texto}
+                                      </p>
+                                      <p className="text-cocoa-muted">
+                                        {nota.autor}
+                                        {nota.cobro_extra
+                                          ? ` · cobro extra S/ ${nota.cobro_extra.toFixed(2)}`
+                                          : ""}
+                                      </p>
+                                      {nota.imagenes.length > 0 && (
+                                        <div className="mt-1 flex flex-wrap gap-1.5">
+                                          {nota.imagenes.map((url) => (
+                                            <a key={url} href={url} target="_blank" rel="noreferrer">
+                                              <img
+                                                src={url}
+                                                alt="Foto del vestido"
+                                                className="h-14 w-14 rounded-md border border-line object-cover"
+                                              />
+                                            </a>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
                               )}
                             </>
                           );
@@ -632,7 +678,7 @@ export default function MyDay() {
                     </p>
 
                     <p className="mt-1 text-xs text-cocoa-muted">
-                      Los nuevos vestidos aparecerán aquí automáticamente.
+                      Aparecen aquí cuando la jefa de taller inicia su proceso.
                     </p>
 
                     <button

@@ -895,6 +895,38 @@ class MiHistorialTallerView(APIView):
 
 
 
+def notas_para_taller(vestido, request=None, limite=10):
+    """Observaciones con fotos y cobros extra, para que todas las vean."""
+    datos = []
+    for nota in vestido.notas.prefetch_related("imagenes", "cargos")[:limite]:
+        cargo = next(iter(nota.cargos.all()), None)
+        datos.append({
+            "id": nota.id,
+            "tipo": nota.tipo,
+            "texto": nota.texto,
+            "autor": nota.autor_nombre,
+            "fecha": nota.creado_en,
+            "imagenes": [
+                request.build_absolute_uri(img.archivo.url) if request else img.archivo.url
+                for img in nota.imagenes.all()
+            ],
+            "cobro_extra": float(cargo.monto) if cargo else None,
+        })
+    return datos
+
+
+class NotasVestidoTallerView(APIView):
+    """GET /api/taller/vestidos/<id>/notas/ — observaciones y fotos del vestido."""
+
+    permission_classes = [EsPersonalTaller]
+
+    def get(self, request, pk):
+        vestido = VestidoContrato.objects.filter(pk=pk).first()
+        if vestido is None:
+            return Response({"detail": "El vestido no existe."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(notas_para_taller(vestido, request, limite=100))
+
+
 def serializar_sesion_vestido(sesion):
     return {
         "id": sesion.id,
@@ -962,8 +994,9 @@ class VestidosDisponiblesView(APIView):
 
             asegurar_pasos(vestido)
             paso = paso_actual(vestido)
-            # La entrega la registra la jefa de taller.
-            if paso is None or paso.es_entrega:
+            # La entrega la registra la jefa de taller y solo se puede
+            # trabajar en un proceso que la jefa ya inició.
+            if paso is None or paso.es_entrega or paso.estado != "EN_CURSO":
                 continue
 
             resultado.append({
@@ -993,6 +1026,9 @@ class VestidosDisponiblesView(APIView):
                     and paso.plantilla.operacion_id in mis_operaciones
                 ),
                 "asignada_a_mi": paso.trabajadoras.filter(pk=trabajadora.pk).exists(),
+                "proceso_iniciado_en": paso.iniciado_en,
+                # Observaciones, fotos y cambios pedidos (visibles para todas).
+                "observaciones": notas_para_taller(vestido, request),
             })
 
         # Primero lo asignado a ella y lo de su área.
@@ -1080,6 +1116,11 @@ class IniciarSesionVestidoView(APIView):
         if paso is None or paso.es_entrega:
             return Response(
                 {"detail": "El vestido está listo para entrega."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if paso.estado != "EN_CURSO":
+            return Response(
+                {"detail": f"La jefa de taller aún no inició el proceso «{paso.nombre}»."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

@@ -1,5 +1,6 @@
 
 from django.urls import path, include
+from core.simulador_views import SimuladorView
 
 from .views import (
     CapacidadProduccionView,
@@ -19,4 +20,5 @@ urlpatterns = [
     ),
     path("contratos/", include("core.contratos.urls")),
     path("produccion/", include("core.produccion.urls")),
+    path("simulador/", SimuladorView.as_view(), name="simulador"),
 ]

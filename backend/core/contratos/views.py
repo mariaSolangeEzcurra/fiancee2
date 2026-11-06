@@ -59,7 +59,8 @@ def contratos_queryset():
         "vestidos__tipo_vestido",
         "vestidos__ruta__operaciones__operacion",
         "vestidos__procesos",
-        "pagos",
+        "pagos__vestido",
+        "cargos_adicionales__vestido",
     )
 
 

@@ -2,7 +2,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
 import { productionApi } from '../services/productionApi';
-import type { NoteKind, ProdDress, ProdPriority, ProdWorker } from '../services/productionApi';
+import type {
+  NoteKind,
+  PaymentMethod,
+  ProdDress,
+  ProdOperation,
+  ProdPriority,
+  ProdReminder,
+  ProdWorker,
+} from '../services/productionApi';
 
 /**
  * Datos y acciones de producción conectados a Django.
@@ -13,6 +21,8 @@ import type { NoteKind, ProdDress, ProdPriority, ProdWorker } from '../services/
 export function useProduction() {
   const [dresses, setDresses] = useState<ProdDress[]>([]);
   const [workers, setWorkers] = useState<ProdWorker[]>([]);
+  const [operations, setOperations] = useState<ProdOperation[]>([]);
+  const [reminders, setReminders] = useState<ProdReminder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -21,9 +31,16 @@ export function useProduction() {
     setLoading(true);
     setError(null);
     try {
-      const [d, w] = await Promise.all([productionApi.list(), productionApi.workers()]);
+      const [d, w, o, r] = await Promise.all([
+        productionApi.list(),
+        productionApi.workers(),
+        productionApi.operations(),
+        productionApi.reminders(),
+      ]);
       setDresses(d);
       setWorkers(w);
+      setOperations(o);
+      setReminders(r);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo cargar la producción.');
     } finally {
@@ -45,6 +62,8 @@ export function useProduction() {
     try {
       const { dress, detail } = await action();
       setDresses((list) => list.map((d) => (d.id === id ? dress : d)));
+      // Los recordatorios dependen del avance del vestido.
+      productionApi.reminders().then(setReminders).catch(() => undefined);
       if (detail) toast.success(detail, successDescription ? { description: successDescription } : undefined);
       return true;
     } catch (e) {
@@ -62,6 +81,8 @@ export function useProduction() {
   return {
     dresses,
     workers,
+    operations,
+    reminders,
     loading,
     error,
     busyId,
@@ -74,7 +95,23 @@ export function useProduction() {
       run(id, () => productionApi.toggleStepWorker(id, index, workerId)),
     setDeadline: (id: string, deadline: string) => run(id, () => productionApi.update(id, { deadline })),
     setPriority: (id: string, priority: ProdPriority) => run(id, () => productionApi.update(id, { priority })),
-    addNote: (id: string, text: string, kind: NoteKind) => run(id, () => productionApi.addNote(id, text, kind)),
+    addNote: (
+      id: string,
+      text: string,
+      kind: NoteKind,
+      options?: { images?: File[]; extraAmount?: number | null; extraConcept?: string }
+    ) => run(id, () => productionApi.addNote(id, text, kind, options)),
+    startStep: (id: string) => run(id, () => productionApi.startStep(id)),
+    addStep: (id: string, data: { operationId: number; hours: number; after?: number; name?: string }) =>
+      run(id, () => productionApi.addStep(id, data)),
+    removeStep: (id: string, index: number) => run(id, () => productionApi.removeStep(id, index)),
+    addPayment: (
+      id: string,
+      data: { amount: number; method?: PaymentMethod; date?: string; reference?: string; concept?: string }
+    ) => run(id, () => productionApi.addPayment(id, data)),
+    addCharge: (id: string, data: { concept: string; amount: number; description?: string }) =>
+      run(id, () => productionApi.addCharge(id, data)),
+    removeCharge: (id: string, chargeId: number) => run(id, () => productionApi.removeCharge(id, chargeId)),
   };
 }
 

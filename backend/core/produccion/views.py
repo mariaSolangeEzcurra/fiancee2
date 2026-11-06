@@ -17,23 +17,35 @@ from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import SAFE_METHODS, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import (
+    CargoAdicional,
     NotaVestido,
+    Operacion,
+    Pago,
     PasoVestido,
     SesionVestido,
     Trabajadora,
     VestidoContrato,
 )
 from core.services.produccion import (
+    agregar_cargo,
+    agregar_nota,
+    agregar_paso,
     alternar_trabajadora,
     asegurar_pasos,
     cambiar_horas_estimadas,
     cambiar_paso_actual,
     completar_paso,
+    eliminar_cargo,
+    eliminar_paso,
+    iniciar_proceso,
+    recordatorios_vestido,
+    registrar_pago,
 )
 
 ROLES_LECTURA = ("jefa_taller", "gerencia")
@@ -63,6 +75,12 @@ def error(exc):
     return Response({"detail": mensaje}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def url_archivo(request, archivo):
+    if not archivo:
+        return None
+    return request.build_absolute_uri(archivo.url) if request else archivo.url
+
+
 # ============================================================
 # SERIALIZACIÓN (forma del frontend)
 # ============================================================
@@ -70,9 +88,7 @@ def error(exc):
 def estado_frontend(vestido, pasos):
     if vestido.estado == VestidoContrato.Estado.FINALIZADO:
         return "Terminado"
-    if vestido.estado == VestidoContrato.Estado.PENDIENTE and all(
-        p.estado == PasoVestido.Estado.PENDIENTE for p in pasos
-    ):
+    if all(p.estado == PasoVestido.Estado.PENDIENTE for p in pasos) and not vestido.sesiones_trabajo.all():
         return "En cola"
     return "En producción"
 
@@ -107,7 +123,6 @@ def serializar_sesion(sesion, pasos_por_id):
         "pauseMinutes": round(segundos_pausa / 60),
         "pauses": len(pausas),
         "notes": sesion.observaciones,
-        # Asistencia (jornada) en la que se registró la sesión.
         "shift": {
             "date": jornada.fecha,
             "checkIn": jornada.entrada,
@@ -116,25 +131,29 @@ def serializar_sesion(sesion, pasos_por_id):
     }
 
 
-def serializar_vestido(vestido):
+def _nombre(texto):
+    return texto[:1].upper() + texto[1:]
+
+
+def _usuario(u):
+    return (u.get_full_name() or u.username) if u else None
+
+
+def serializar_vestido(vestido, request=None):
     contrato = vestido.contrato
     cliente = contrato.cliente
     pasos = sorted(vestido.pasos.all(), key=lambda p: p.orden)
+    ahora = timezone.now()
 
     sesiones = sorted(vestido.sesiones_trabajo.all(), key=lambda x: x.inicio, reverse=True)
     sesion_abierta = next(
-        (x for x in sesiones
-         if x.estado in (SesionVestido.Estado.EN_CURSO, SesionVestido.Estado.PAUSADA)),
+        (x for x in sesiones if x.estado in (SesionVestido.Estado.EN_CURSO, SesionVestido.Estado.PAUSADA)),
         None,
     )
 
-    pasos_por_id = {
-        paso.id: {"index": i, "name": paso.nombre[:1].upper() + paso.nombre[1:]}
-        for i, paso in enumerate(pasos)
-    }
+    pasos_por_id = {paso.id: {"index": i, "name": _nombre(paso.nombre)} for i, paso in enumerate(pasos)}
     registro = [serializar_sesion(x, pasos_por_id) for x in sesiones]
 
-    # Horas por trabajadora en todo el vestido.
     resumen = {}
     for item in registro:
         r = resumen.setdefault(item["workerId"], {
@@ -148,40 +167,81 @@ def serializar_vestido(vestido):
 
     steps = []
     for indice, paso in enumerate(pasos):
-        trabajadas = sum(
-            (Decimal(str(x["hours"])) for x in registro if x["stepIndex"] == indice),
-            Decimal("0"),
-        )
+        trabajadas = sum((x["hours"] for x in registro if x["stepIndex"] == indice), 0.0)
         trabajadoras = list(paso.trabajadoras.all())
+        fin = paso.completado_en or (ahora if paso.estado == PasoVestido.Estado.EN_CURSO else None)
+        duracion = (fin - paso.iniciado_en).total_seconds() / 3600 if (paso.iniciado_en and fin) else None
         steps.append({
             "id": paso.id,
             "index": indice,
             "process": paso.nombre,
-            "name": paso.nombre[:1].upper() + paso.nombre[1:],
+            "name": _nombre(paso.nombre),
+            "operationId": paso.operacion_id,
             "area": paso.area,
             "timeType": paso.tipo_tiempo,
             "isDelivery": paso.es_entrega,
+            "isExtra": paso.es_adicional,
+            "status": paso.estado,
             "estHours": float(paso.horas_estimadas),
-            "workedHours": round(float(trabajadas), 2),
+            "workedHours": round(trabajadas, 2),
             "done": paso.estado == PasoVestido.Estado.COMPLETADO,
             "inProgress": paso.estado == PasoVestido.Estado.EN_CURSO,
+            "startedAt": paso.iniciado_en,
+            "startedBy": _usuario(paso.iniciado_por),
+            "completedAt": paso.completado_en,
+            "completedBy": _usuario(paso.completado_por),
+            # Tiempo real desde que la jefa lo inició (horas de reloj).
+            "elapsedHours": round(duracion, 2) if duracion is not None else None,
             "workerIds": [str(t.id) for t in trabajadoras],
             "workers": [t.nombre for t in trabajadoras],
-            "completedAt": paso.completado_en,
             "sessions": [x for x in registro if x["stepIndex"] == indice],
         })
 
-    notas = [
-        {
+    notas = []
+    for n in vestido.notas.all():
+        cargo = next(iter(n.cargos.all()), None)
+        notas.append({
             "id": str(n.id),
             "kind": "incidencia" if n.tipo == NotaVestido.Tipo.INCIDENCIA else "observacion",
             "author": n.autor_nombre or "—",
             "date": timezone.localtime(n.creado_en).date().isoformat(),
             "createdAt": n.creado_en,
             "text": n.texto,
-        }
-        for n in vestido.notas.all()
-    ]
+            "images": [
+                {"id": img.id, "url": url_archivo(request, img.archivo)} for img in n.imagenes.all()
+            ],
+            "extraCharge": {"id": cargo.id, "concept": cargo.concepto, "amount": float(cargo.monto)} if cargo else None,
+        })
+
+    # Dinero del vestido y del contrato.
+    cargos_vestido = list(vestido.cargos_adicionales.all())
+    pagos_contrato = [p for p in contrato.pagos.all() if p.confirmado]
+    extras_vestido = sum((c.monto for c in cargos_vestido), Decimal("0"))
+    pagado = sum((p.importe for p in pagos_contrato), Decimal("0"))
+    finance = {
+        "dressPrice": float(vestido.precio_total),
+        "dressExtras": float(extras_vestido),
+        "dressTotal": float(vestido.precio_total + extras_vestido),
+        "contractTotal": float(contrato.precio_total),
+        "contractPaid": float(pagado),
+        "contractBalance": float(contrato.precio_total - pagado),
+        "charges": [
+            {
+                "id": c.id, "concept": c.concepto, "description": c.descripcion,
+                "amount": float(c.monto), "date": c.fecha, "by": _usuario(c.registrado_por),
+                "noteId": str(c.nota_id) if c.nota_id else None,
+            }
+            for c in cargos_vestido
+        ],
+        "payments": [
+            {
+                "id": p.id, "amount": float(p.importe), "date": p.fecha, "method": p.get_metodo_display(),
+                "concept": p.concepto, "reference": p.referencia,
+                "dressCode": p.vestido.codigo if p.vestido_id else None,
+            }
+            for p in sorted(pagos_contrato, key=lambda p: (p.fecha, p.id), reverse=True)
+        ],
+    }
 
     return {
         "id": str(vestido.id),
@@ -189,6 +249,7 @@ def serializar_vestido(vestido):
         "code": vestido.codigo,
         "contractId": contrato.id,
         "contract": contrato.numero,
+        "contractDate": contrato.fecha_firma,
         "client": cliente.nombre if cliente else "",
         "clientPhone": cliente.telefono if cliente else "",
         "city": "",
@@ -209,12 +270,11 @@ def serializar_vestido(vestido):
         "currentIndex": min(vestido.paso_actual, max(len(steps) - 1, 0)),
         "steps": steps,
         "notes": notas,
-        # Quién lo tiene ahora (sesión abierta).
+        "finance": finance,
+        "reminders": recordatorios_vestido(vestido, pasos),
         "activeSession": (
-            next(x for x in registro if x["id"] == sesion_abierta.id)
-            if sesion_abierta else None
+            next(x for x in registro if x["id"] == sesion_abierta.id) if sesion_abierta else None
         ),
-        # Registro completo de trabajo (más reciente primero).
         "workLog": registro,
         "workersSummary": sorted(resumen.values(), key=lambda r: -r["hours"]),
     }
@@ -228,19 +288,23 @@ def vestidos_queryset():
         )
         .select_related("contrato", "contrato__cliente", "tipo_vestido", "ruta")
         .prefetch_related(
-            Prefetch("pasos", queryset=PasoVestido.objects.prefetch_related("trabajadoras")),
+            Prefetch("pasos", queryset=PasoVestido.objects.select_related(
+                "iniciado_por", "completado_por"
+            ).prefetch_related("trabajadoras")),
             Prefetch(
                 "sesiones_trabajo",
                 queryset=SesionVestido.objects.select_related("trabajadora", "jornada").prefetch_related("pausas"),
             ),
-            "notas",
+            Prefetch("notas", queryset=NotaVestido.objects.prefetch_related("imagenes", "cargos")),
+            Prefetch("cargos_adicionales", queryset=CargoAdicional.objects.select_related("registrado_por")),
+            Prefetch("contrato__pagos", queryset=Pago.objects.select_related("vestido")),
         )
     )
 
 
-def respuesta(vestido, mensaje=None, codigo=status.HTTP_200_OK):
+def respuesta(request, vestido, mensaje=None, codigo=status.HTTP_200_OK):
     vestido = vestidos_queryset().get(pk=vestido.pk)
-    data = {"dress": serializar_vestido(vestido)}
+    data = {"dress": serializar_vestido(vestido, request)}
     if mensaje:
         data["detail"] = mensaje
     return Response(data, status=codigo)
@@ -250,6 +314,15 @@ def vestido_o_404(pk):
     vestido = get_object_or_404(VestidoContrato.objects.select_related("contrato"), pk=pk, ruta__isnull=False)
     asegurar_pasos(vestido)
     return vestido
+
+
+def accion(request, vestido, fn, mensaje, codigo=status.HTTP_200_OK):
+    try:
+        resultado = fn()
+    except DjangoValidationError as exc:
+        return error(exc)
+    texto = mensaje(resultado) if callable(mensaje) else mensaje
+    return respuesta(request, vestido, texto, codigo)
 
 
 # ============================================================
@@ -263,22 +336,62 @@ class VestidosProduccionView(APIView):
 
     @extend_schema(operation_id="produccion_vestidos", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
-        # Vestidos antiguos sin línea de producción.
         for vestido in VestidoContrato.objects.filter(ruta__isnull=False, pasos__isnull=True):
             asegurar_pasos(vestido)
 
         vestidos = vestidos_queryset()
         params = request.query_params
         if q := params.get("q", "").strip():
-            vestidos = vestidos.filter(
-                Q(codigo__icontains=q) | Q(contrato__cliente__nombre__icontains=q)
-            )
+            vestidos = vestidos.filter(Q(codigo__icontains=q) | Q(contrato__cliente__nombre__icontains=q))
         if taller := params.get("taller"):
             vestidos = vestidos.filter(ruta__taller=taller)
         if estado := params.get("estado"):
             vestidos = vestidos.filter(estado=estado)
 
-        return Response([serializar_vestido(v) for v in vestidos.order_by("contrato__fecha_entrega", "codigo")])
+        return Response([
+            serializar_vestido(v, request)
+            for v in vestidos.order_by("contrato__fecha_entrega", "codigo")
+        ])
+
+
+class RecordatoriosView(APIView):
+    """GET /api/core/produccion/recordatorios/ — avisos de seguimiento para la jefa."""
+
+    permission_classes = [PermisoProduccion]
+
+    @extend_schema(operation_id="produccion_recordatorios", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
+    def get(self, request):
+        avisos = []
+        vestidos = (
+            VestidoContrato.objects.filter(ruta__isnull=False, contrato__estado__in=["ACTIVO", "EN_PRODUCCION"])
+            .exclude(estado=VestidoContrato.Estado.FINALIZADO)
+            .select_related("contrato", "contrato__cliente")
+            .prefetch_related("pasos")
+        )
+        for vestido in vestidos:
+            for aviso in recordatorios_vestido(vestido, sorted(vestido.pasos.all(), key=lambda p: p.orden)):
+                avisos.append({
+                    **aviso,
+                    "dressId": str(vestido.id),
+                    "code": vestido.codigo,
+                    "client": vestido.contrato.cliente.nombre if vestido.contrato.cliente_id else "",
+                    "contract": vestido.contrato.numero,
+                })
+        avisos.sort(key=lambda a: (not a["due"], a["date"]))
+        return Response(avisos)
+
+
+class OperacionesView(APIView):
+    """GET /api/core/produccion/operaciones/ — procesos que se pueden agregar."""
+
+    permission_classes = [PermisoProduccion]
+
+    @extend_schema(operation_id="produccion_operaciones", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
+    def get(self, request):
+        return Response([
+            {"id": op.id, "name": _nombre(op.nombre), "area": op.area_responsable}
+            for op in Operacion.objects.filter(activa=True).order_by("nombre")
+        ])
 
 
 class VestidoProduccionDetailView(APIView):
@@ -295,7 +408,7 @@ class VestidoProduccionDetailView(APIView):
 
     @extend_schema(operation_id="produccion_vestido", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
     def get(self, request, pk):
-        return respuesta(vestido_o_404(pk))
+        return respuesta(request, vestido_o_404(pk))
 
     @extend_schema(operation_id="produccion_editar_vestido", tags=["produccion"], request=Entrada, responses={200: OpenApiTypes.OBJECT})
     def patch(self, request, pk):
@@ -312,7 +425,22 @@ class VestidoProduccionDetailView(APIView):
             campos.append("prioridad")
         if campos:
             vestido.save(update_fields=campos)
-        return respuesta(vestido, "Vestido actualizado.")
+        return respuesta(request, vestido, "Vestido actualizado.")
+
+
+class IniciarProcesoView(APIView):
+    """POST /api/core/produccion/vestidos/<id>/iniciar-proceso/ — la jefa inicia el proceso actual."""
+
+    permission_classes = [PermisoProduccion]
+
+    @extend_schema(operation_id="produccion_iniciar_proceso", tags=["produccion"], request=None, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request, pk):
+        vestido = vestido_o_404(pk)
+        return accion(
+            request, vestido,
+            lambda: iniciar_proceso(vestido, request.user),
+            lambda paso: f"Proceso «{paso.nombre}» iniciado. Desde ahora corre el tiempo.",
+        )
 
 
 class CompletarPasoView(APIView):
@@ -323,12 +451,11 @@ class CompletarPasoView(APIView):
     @extend_schema(operation_id="produccion_completar_paso", tags=["produccion"], request=None, responses={200: OpenApiTypes.OBJECT})
     def post(self, request, pk):
         vestido = vestido_o_404(pk)
-        try:
-            paso, finalizado = completar_paso(vestido, request.user)
-        except DjangoValidationError as exc:
-            return error(exc)
-        mensaje = "Vestido terminado." if finalizado else f"Proceso «{paso.nombre}» terminado."
-        return respuesta(vestido, mensaje)
+        return accion(
+            request, vestido,
+            lambda: completar_paso(vestido, request.user),
+            lambda r: "Vestido terminado." if r[1] else f"Proceso «{r[0].nombre}» terminado.",
+        )
 
 
 class PasoActualView(APIView):
@@ -344,15 +471,43 @@ class PasoActualView(APIView):
         vestido = vestido_o_404(pk)
         entrada = self.Entrada(data=request.data)
         entrada.is_valid(raise_exception=True)
-        try:
-            cambiar_paso_actual(vestido, entrada.validated_data["index"])
-        except DjangoValidationError as exc:
-            return error(exc)
-        return respuesta(vestido, "Proceso actual actualizado.")
+        return accion(
+            request, vestido,
+            lambda: cambiar_paso_actual(vestido, entrada.validated_data["index"], request.user),
+            "Proceso actual actualizado.",
+        )
+
+
+class PasosView(APIView):
+    """POST /api/core/produccion/vestidos/<id>/pasos/  {operationId, hours, after?, name?} — agrega un proceso."""
+
+    permission_classes = [PermisoProduccion]
+
+    class Entrada(serializers.Serializer):
+        operationId = serializers.IntegerField()
+        hours = serializers.DecimalField(max_digits=9, decimal_places=2, min_value=Decimal("0"))
+        after = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+        name = serializers.CharField(required=False, allow_blank=True, max_length=120)
+
+    @extend_schema(operation_id="produccion_agregar_paso", tags=["produccion"], request=Entrada, responses={201: OpenApiTypes.OBJECT})
+    def post(self, request, pk):
+        vestido = vestido_o_404(pk)
+        entrada = self.Entrada(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        d = entrada.validated_data
+        return accion(
+            request, vestido,
+            lambda: agregar_paso(vestido, d["operationId"], d["hours"], d.get("after"), d.get("name", ""), request.user),
+            lambda paso: f"Proceso «{paso.nombre}» agregado a la cola.",
+            status.HTTP_201_CREATED,
+        )
 
 
 class PasoView(APIView):
-    """PATCH /api/core/produccion/vestidos/<id>/pasos/<index>/  {estHours}"""
+    """
+    PATCH  /api/core/produccion/vestidos/<id>/pasos/<index>/  {estHours}
+    DELETE /api/core/produccion/vestidos/<id>/pasos/<index>/  (solo procesos agregados)
+    """
 
     permission_classes = [PermisoProduccion]
 
@@ -364,11 +519,16 @@ class PasoView(APIView):
         vestido = vestido_o_404(pk)
         entrada = self.Entrada(data=request.data)
         entrada.is_valid(raise_exception=True)
-        try:
-            cambiar_horas_estimadas(vestido, index, entrada.validated_data["estHours"])
-        except DjangoValidationError as exc:
-            return error(exc)
-        return respuesta(vestido, "Horas estimadas actualizadas. Se reprogramó la capacidad del taller.")
+        return accion(
+            request, vestido,
+            lambda: cambiar_horas_estimadas(vestido, index, entrada.validated_data["estHours"]),
+            "Horas estimadas actualizadas. Se reprogramó la capacidad del taller.",
+        )
+
+    @extend_schema(operation_id="produccion_quitar_paso", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
+    def delete(self, request, pk, index):
+        vestido = vestido_o_404(pk)
+        return accion(request, vestido, lambda: eliminar_paso(vestido, index), "Proceso quitado.")
 
 
 class TrabajadoraPasoView(APIView):
@@ -384,37 +544,112 @@ class TrabajadoraPasoView(APIView):
         vestido = vestido_o_404(pk)
         entrada = self.Entrada(data=request.data)
         entrada.is_valid(raise_exception=True)
-        try:
-            _, agregada = alternar_trabajadora(vestido, index, entrada.validated_data["workerId"])
-        except DjangoValidationError as exc:
-            return error(exc)
-        return respuesta(vestido, "Trabajadora asignada." if agregada else "Trabajadora retirada.")
+        return accion(
+            request, vestido,
+            lambda: alternar_trabajadora(vestido, index, entrada.validated_data["workerId"]),
+            lambda r: "Trabajadora asignada." if r[1] else "Trabajadora retirada.",
+        )
 
 
-class NotasVestidoView(APIView):
-    """POST /api/core/produccion/vestidos/<id>/notas/  {kind: observacion|incidencia, text}"""
+class PagosVestidoView(APIView):
+    """POST /api/core/produccion/vestidos/<id>/pagos/  {amount, method?, date?, reference?, concept?}"""
 
     permission_classes = [PermisoProduccion]
 
     class Entrada(serializers.Serializer):
+        amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+        method = serializers.ChoiceField(choices=Pago.Metodo.choices, required=False)
+        date = serializers.DateField(required=False)
+        reference = serializers.CharField(required=False, allow_blank=True, max_length=100)
+        concept = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    @extend_schema(operation_id="produccion_pago", tags=["produccion"], request=Entrada, responses={201: OpenApiTypes.OBJECT})
+    def post(self, request, pk):
+        vestido = vestido_o_404(pk)
+        entrada = self.Entrada(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        d = entrada.validated_data
+        return accion(
+            request, vestido,
+            lambda: registrar_pago(
+                vestido, d["amount"], request.user, d.get("method"), d.get("date"),
+                d.get("reference", ""), d.get("concept", ""),
+            ),
+            lambda p: f"Pago de S/ {p.importe} registrado.",
+            status.HTTP_201_CREATED,
+        )
+
+
+class CargosVestidoView(APIView):
+    """POST /api/core/produccion/vestidos/<id>/cargos/  {concept, amount, description?}"""
+
+    permission_classes = [PermisoProduccion]
+
+    class Entrada(serializers.Serializer):
+        concept = serializers.CharField(max_length=200)
+        amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+        description = serializers.CharField(required=False, allow_blank=True)
+
+    @extend_schema(operation_id="produccion_cargo", tags=["produccion"], request=Entrada, responses={201: OpenApiTypes.OBJECT})
+    def post(self, request, pk):
+        vestido = vestido_o_404(pk)
+        entrada = self.Entrada(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        d = entrada.validated_data
+        return accion(
+            request, vestido,
+            lambda: agregar_cargo(vestido, d["concept"], d["amount"], request.user, d.get("description", "")),
+            lambda c: f"Cobro extra de S/ {c.monto} agregado al vestido.",
+            status.HTTP_201_CREATED,
+        )
+
+
+class CargoVestidoView(APIView):
+    """DELETE /api/core/produccion/vestidos/<id>/cargos/<cargo_id>/"""
+
+    permission_classes = [PermisoProduccion]
+
+    @extend_schema(operation_id="produccion_quitar_cargo", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
+    def delete(self, request, pk, cargo_id):
+        vestido = vestido_o_404(pk)
+        return accion(request, vestido, lambda: eliminar_cargo(vestido, cargo_id), "Cobro extra quitado.")
+
+
+class NotasVestidoView(APIView):
+    """
+    POST /api/core/produccion/vestidos/<id>/notas/  (multipart o JSON)
+      kind: observacion | incidencia
+      text: texto
+      images: una o varias fotos (campo repetido)
+      extraAmount / extraConcept: cobro extra por la modificación (opcional)
+    """
+
+    permission_classes = [PermisoProduccion]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    class Entrada(serializers.Serializer):
         kind = serializers.ChoiceField(choices=["observacion", "incidencia"], default="observacion")
-        text = serializers.CharField(max_length=2000)
+        text = serializers.CharField(max_length=2000, required=False, allow_blank=True)
+        extraAmount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True)
+        extraConcept = serializers.CharField(max_length=200, required=False, allow_blank=True)
 
     @extend_schema(operation_id="produccion_nota", tags=["produccion"], request=Entrada, responses={201: OpenApiTypes.OBJECT})
     def post(self, request, pk):
         vestido = vestido_o_404(pk)
         entrada = self.Entrada(data=request.data)
         entrada.is_valid(raise_exception=True)
-        datos = entrada.validated_data
-        NotaVestido.objects.create(
-            vestido=vestido,
-            tipo=NotaVestido.Tipo.INCIDENCIA if datos["kind"] == "incidencia" else NotaVestido.Tipo.OBSERVACION,
-            texto=datos["text"].strip(),
-            autor=request.user,
-            autor_nombre=request.user.get_full_name() or request.user.username,
+        d = entrada.validated_data
+        imagenes = request.FILES.getlist("images")
+        tipo = NotaVestido.Tipo.INCIDENCIA if d["kind"] == "incidencia" else NotaVestido.Tipo.OBSERVACION
+        return accion(
+            request, vestido,
+            lambda: agregar_nota(
+                vestido, tipo, d.get("text", ""), request.user, imagenes,
+                d.get("extraAmount") or None, d.get("extraConcept", ""),
+            ),
+            "Incidencia registrada." if d["kind"] == "incidencia" else "Observación agregada.",
+            status.HTTP_201_CREATED,
         )
-        mensaje = "Incidencia registrada." if datos["kind"] == "incidencia" else "Observación agregada."
-        return respuesta(vestido, mensaje, status.HTTP_201_CREATED)
 
 
 class TrabajadorasProduccionView(APIView):

@@ -286,9 +286,18 @@ export function SimulatorForm({
             options={[
               { value: 'Taller A', label: 'Taller A · completo' },
               { value: 'Taller C', label: 'Taller C → Taller A' },
+              { value: 'Tienda', label: 'Vestido en tienda' },
             ]}
           />
         </Field>
+
+        {input.workshop === 'Tienda' && (
+          <p className="mt-3 rounded-xl bg-cream px-3 py-3 text-xs leading-relaxed text-cocoa">
+            Vestido que ya está hecho en tienda: solo pasa por modificaciones
+            (sin compra de materiales). Los tiempos de cada proceso se pueden
+            ajustar luego en el contrato.
+          </p>
+        )}
 
         {input.workshop === 'Taller C' && (
           <p className="mt-3 rounded-xl bg-cream px-3 py-3 text-xs leading-relaxed text-cocoa">

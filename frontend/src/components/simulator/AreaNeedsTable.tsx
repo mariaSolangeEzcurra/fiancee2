@@ -80,7 +80,7 @@ export function AreaNeedsTable({
                       )}
                       aria-hidden="true"
                     />
-                    {areaName(area.area)}
+                    {area.label ?? areaName(area.area)}
                   </span>
                 </td>
 
@@ -112,7 +112,7 @@ export function AreaNeedsTable({
                             ? 0.9
                             : utilization,
                       )}
-                      label={`Utilización de ${areaName(area.area)}`}
+                      label={`Utilización de ${area.label ?? areaName(area.area)}`}
                     />
 
                     <span className="tabular w-11 shrink-0 text-right text-xs text-cocoa-muted">

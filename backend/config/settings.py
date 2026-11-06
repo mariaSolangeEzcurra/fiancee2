@@ -107,6 +107,21 @@ USE_TZ = True
 # Archivos estáticos
 STATIC_URL = 'static/'
 
+# Archivos subidos (fotos de los vestidos).
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Planificación del taller.
+# Días antes de la fecha de entrega en que empieza el bordado.
+FIANCEE_BORDADO_DIAS_ANTES = 15
+# Recordatorio de seguimiento a la primera prueba (días desde el contrato).
+FIANCEE_RECORDATORIO_PRIMERA_PRUEBA_DIAS = 45
+# Temporada alta: carga del taller o vestidos activos que la activan.
+FIANCEE_TEMPORADA_ALTA_CARGA = 0.70
+FIANCEE_TEMPORADA_ALTA_VESTIDOS = 10
+# Holgura de horas que se añade en temporada alta (20 %).
+FIANCEE_TEMPORADA_ALTA_FACTOR = 1.20
+
 
 # Modelo de usuario personalizado
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

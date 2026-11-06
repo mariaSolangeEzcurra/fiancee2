@@ -32,7 +32,7 @@ export interface OperacionCatalogo {
 
 export interface RutaCatalogo {
   id: number;
-  taller: 'A' | 'C';
+  taller: 'A' | 'C' | 'T';
   descripcion: string;
   operaciones: OperacionCatalogo[];
 }
@@ -230,7 +230,12 @@ async function fetchApi(
 
   headers.set('Accept', 'application/json');
 
-  if (options.body != null && !headers.has('Content-Type')) {
+  // FormData (fotos): el navegador pone el Content-Type con su boundary.
+  if (
+    options.body != null &&
+    !(options.body instanceof FormData) &&
+    !headers.has('Content-Type')
+  ) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -295,6 +300,44 @@ async function apiRequest<T>(
   }
 
   return data as T;
+}
+
+/**
+ * Petición autenticada que devuelve la Response sin procesar.
+ * Usa el mismo token (fio_access) y renueva la sesión si vence.
+ * `path` es relativo a VITE_API_URL (que ya incluye /api).
+ */
+export async function authorizedFetch(
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  let token = getAccessToken();
+
+  if (!token) {
+    token = await refreshAccessToken();
+
+    if (!token) {
+      throw new Error(
+        'Tu sesión no tiene un token de acceso válido. Inicia sesión nuevamente.'
+      );
+    }
+  }
+
+  let response = await fetchApi(path, options, token);
+
+  if (response.status === 401) {
+    const newToken = await refreshAccessToken();
+
+    if (!newToken) {
+      throw new Error(
+        'Tu sesión ha vencido. Inicia sesión nuevamente.'
+      );
+    }
+
+    response = await fetchApi(path, options, newToken);
+  }
+
+  return response;
 }
 
 /**

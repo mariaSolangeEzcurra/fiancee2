@@ -20,6 +20,7 @@ from core.personal.trabajadora_views import (
     ReanudarSesionVestidoView,
     FinalizarSesionVestidoView,
     MiResumenDiarioVestidosView,
+    NotasVestidoTallerView,
 )
 
 urlpatterns = [
@@ -42,5 +43,6 @@ urlpatterns = [
     path("sesiones-vestido/<int:pk>/pausar/", PausarSesionVestidoView.as_view(), name="pausar-sesion-vestido"),
     path("sesiones-vestido/<int:pk>/reanudar/", ReanudarSesionVestidoView.as_view(), name="reanudar-sesion-vestido"),
     path("sesiones-vestido/<int:pk>/finalizar/", FinalizarSesionVestidoView.as_view(), name="finalizar-sesion-vestido"),
+    path("vestidos/<int:pk>/notas/", NotasVestidoTallerView.as_view(), name="taller-notas-vestido"),
     path("mi-resumen-diario/", MiResumenDiarioVestidosView.as_view(), name="mi-resumen-diario-vestidos"),
 ]

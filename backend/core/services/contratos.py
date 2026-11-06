@@ -323,10 +323,10 @@ def _aplicar_items(contrato, items, permitir_borrar):
 
 
 def _recalcular_total(contrato):
-    contrato.precio_total = sum(
-        (v.precio_total for v in contrato.vestidos.all()), CERO
-    )
-    contrato.save(update_fields=["precio_total"])
+    """Ítems del contrato + cobros adicionales registrados en el taller."""
+    from core.services.produccion import recalcular_total_contrato
+
+    recalcular_total_contrato(contrato)
 
 
 def _renumerar_codigos(contrato):

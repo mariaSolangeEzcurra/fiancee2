@@ -31,7 +31,7 @@ export type AreaHours = Record<AreaId, number>;
 
 export type DressType = 'Novia' | 'Quinceañera';
 export type Complexity = 'Baja' | 'Media' | 'Alta' | 'Muy alta';
-export type Workshop = 'Taller A' | 'Taller C';
+export type Workshop = 'Taller A' | 'Taller C' | 'Tienda';
 export type Level = 'Ninguno' | 'Ligero' | 'Medio' | 'Intenso';
 export type SkirtVolume = 'Estándar' | 'Amplio' | 'Gran volumen';
 
@@ -244,6 +244,8 @@ export interface AreaLoad {
 }
 
 export interface AreaNeed extends AreaLoad {
+  /** Nombre a mostrar cuando el área viene del backend (p. ej. Compras). */
+  label?: string;
   needed: number;
   margin: number;
   utilAfter: number;
@@ -309,6 +311,50 @@ export interface SimulationResult {
   minLead: number;
   reasons: string[];
   alternativeDate: Date | null;
+
+  /** Resultado del simulador de Django (factibilidad real). */
+  verdict?: 'FACTIBLE' | 'FACTIBLE_CON_CONDICIONES' | 'NO_FACTIBLE';
+  verdictTitle?: string;
+  verdictMessage?: string;
+  conditions?: string[];
+  notes?: string[];
+  warnings?: string[];
+  realMarginDays?: number;
+  cause?: { type: 'ESPERA' | 'CAPACIDAD' | 'TIEMPO'; title: string; detail: string } | null;
+  dressSummaries?: {
+    name: string;
+    workshop: string;
+    ready: string;
+    onTime: boolean;
+    marginDays: number;
+    reason: string | null;
+  }[];
+  bottleneck?: {
+    area: string;
+    name: string;
+    needed: number;
+    available: number;
+    utilAfter: number;
+    missing: number;
+  } | null;
+  highSeason?: {
+    active: boolean;
+    load: number;
+    dressesInProduction: number;
+    loadThreshold: number;
+    dressesThreshold: number;
+    factor: number;
+    reason: string;
+  };
+  dresses?: {
+    name: string;
+    workshop: string;
+    start: string;
+    finish: string;
+    workHours: number;
+    waitHours: number;
+    missingHours: number;
+  }[];
 }
 
 export interface SystemAlert {

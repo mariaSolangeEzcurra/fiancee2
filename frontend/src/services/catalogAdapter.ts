@@ -49,7 +49,7 @@ const PROCESS_MAP: Record<string, ProcessId> = {
   encaje: 'encaje',
   acabados: 'acabados',
   basta: 'acabados',
-  lavanderia: 'lavanderia',
+  // Lavandería no es un proceso de la interfaz (se ve como espera).
 };
 
 export function mapProcessName(nombre: string): ProcessId | null {
@@ -115,7 +115,11 @@ export function catalogToTemplates(
   for (const vestido of catalog.vestidos) {
     for (const ruta of vestido.rutas) {
       const workshop: Workshop =
-        ruta.taller === 'C' ? 'Taller C' : 'Taller A';
+        ruta.taller === 'C'
+          ? 'Taller C'
+          : ruta.taller === 'T'
+            ? 'Tienda'
+            : 'Taller A';
 
       const waitingByProcess: Partial<Record<ProcessId, number>> = {};
       let waitingHours = 0;

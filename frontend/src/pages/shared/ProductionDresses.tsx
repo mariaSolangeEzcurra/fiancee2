@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { RefreshCwIcon, SearchIcon } from 'lucide-react';
+import { BellRingIcon, RefreshCwIcon, SearchIcon } from 'lucide-react';
 
 import { ProductionDressDrawer } from '../../components/production/ProductionDressDrawer';
 import { ProductionDressTable } from '../../components/production/ProductionDressTable';
@@ -21,7 +21,7 @@ const PRIORITY_ORDER = { Alta: 0, Media: 1, Baja: 2 } as const;
  */
 export function ProductionDresses({ readOnly = false }: { readOnly?: boolean }) {
   const store = useProduction();
-  const { dresses, loading, error, reload } = store;
+  const { dresses, reminders, loading, error, reload } = store;
 
   const [q, setQ] = useState('');
   const [workshop, setWorkshop] = useState<WorkshopFilter>('todos');
@@ -109,6 +109,35 @@ export function ProductionDresses({ readOnly = false }: { readOnly?: boolean }) 
           <RefreshCwIcon className={cn('h-4 w-4', loading && 'animate-spin')} />
         </button>
       </div>
+
+      {reminders.length > 0 && (
+        <section className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-amber-900">
+            <BellRingIcon className="h-4 w-4" aria-hidden="true" /> Recordatorios de seguimiento ({reminders.length})
+          </h2>
+          <ul className="mt-3 grid gap-2 md:grid-cols-2">
+            {reminders.slice(0, 8).map((r) => (
+              <li key={`${r.dressId}-${r.type}`}>
+                <button
+                  type="button"
+                  onClick={() => r.dressId && setOpenId(r.dressId)}
+                  className="w-full rounded-xl border border-amber-200 bg-paper px-3 py-2 text-left text-sm hover:bg-cream"
+                >
+                  <span className="font-semibold text-cocoa">{r.code}</span>
+                  <span className="text-cocoa-muted"> · {r.client}</span>
+                  <span className={cn('ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-semibold', r.due ? 'bg-amber-200 text-amber-900' : 'bg-cream text-cocoa-muted')}>
+                    {r.due ? 'Hoy' : `En ${r.daysLeft} d`}
+                  </span>
+                  <p className="mt-0.5 text-xs text-cocoa-muted">
+                    {r.title}: {r.message}
+                  </p>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {reminders.length > 8 && <p className="mt-2 text-xs text-amber-900">Y {reminders.length - 8} más…</p>}
+        </section>
+      )}
 
       {error && (
         <div role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">

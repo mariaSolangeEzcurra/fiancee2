@@ -47,9 +47,18 @@ export interface ProdStep {
   index: number;
   process: string; // nombre de la operación (p. ej. "corte de tela")
   name: string; // nombre para mostrar
+  operationId: number | null;
   area: string; // área responsable (CONFECCION, BORDADO…)
   timeType: 'TRABAJO' | 'ESPERA';
   isDelivery: boolean;
+  isExtra: boolean; // agregado por la jefa de taller
+  status: 'PENDIENTE' | 'EN_CURSO' | 'COMPLETADO';
+  /** La jefa inicia el proceso: desde aquí corre el tiempo. */
+  startedAt: string | null;
+  startedBy: string | null;
+  completedBy: string | null;
+  /** Horas de reloj desde el inicio (hasta ahora o hasta que terminó). */
+  elapsedHours: number | null;
   estHours: number;
   workedHours: number;
   done: boolean;
@@ -67,7 +76,62 @@ export interface ProdNote {
   date: string;
   createdAt: string;
   text: string;
+  images: { id: number; url: string }[];
+  extraCharge: { id: number; concept: string; amount: number } | null;
 }
+
+export interface ProdCharge {
+  id: number;
+  concept: string;
+  description: string;
+  amount: number;
+  date: string;
+  by: string | null;
+  noteId: string | null;
+}
+
+export interface ProdPayment {
+  id: number;
+  amount: number;
+  date: string;
+  method: string;
+  concept: string;
+  reference: string;
+  dressCode: string | null;
+}
+
+export interface ProdFinance {
+  dressPrice: number; // precio del vestido en el contrato
+  dressExtras: number; // cobros extra del vestido
+  dressTotal: number;
+  contractTotal: number; // incluye todos los cobros extra
+  contractPaid: number;
+  contractBalance: number;
+  charges: ProdCharge[];
+  payments: ProdPayment[];
+}
+
+export interface ProdReminder {
+  type: 'PRIMERA_PRUEBA' | 'BORDADO';
+  date: string;
+  due: boolean;
+  daysLeft: number;
+  title: string;
+  message: string;
+  // Solo en /recordatorios/
+  dressId?: string;
+  code?: string;
+  client?: string;
+  contract?: string;
+}
+
+export interface ProdOperation {
+  id: number;
+  name: string;
+  area: string;
+}
+
+export type PaymentMethod = 'EFECTIVO' | 'TRANSFERENCIA' | 'TARJETA' | 'OTRO';
 
 export interface ProdDress {
   id: string;
@@ -75,6 +139,7 @@ export interface ProdDress {
   code: string;
   contractId: number;
   contract: string;
+  contractDate: string;
   client: string;
   clientPhone: string;
   city: string;
@@ -95,6 +160,8 @@ export interface ProdDress {
   currentIndex: number;
   steps: ProdStep[];
   notes: ProdNote[];
+  finance: ProdFinance;
+  reminders: ProdReminder[];
   /** Quién tiene el vestido ahora mismo (sesión abierta). */
   activeSession: ProdSession | null;
   /** Todas las sesiones de trabajo, más reciente primero. */
@@ -124,6 +191,42 @@ export const productionApi = {
 
   workers: () => apiRequest<ProdWorker[]>(`${BASE}trabajadoras/`),
 
+  operations: () => apiRequest<ProdOperation[]>(`${BASE}operaciones/`),
+
+  reminders: () => apiRequest<ProdReminder[]>(`${BASE}recordatorios/`),
+
+  /** La jefa inicia el proceso actual (empieza a contar el tiempo). */
+  startStep: (id: string) =>
+    apiRequest<DressResponse>(`${BASE}vestidos/${id}/iniciar-proceso/`, { method: 'POST' }),
+
+  /** Agrega un proceso (prueba extra, ajuste…) a la cola del vestido. */
+  addStep: (id: string, data: { operationId: number; hours: number; after?: number; name?: string }) =>
+    apiRequest<DressResponse>(`${BASE}vestidos/${id}/pasos/`, {
+      method: 'POST',
+      body: { ...data, hours: data.hours.toFixed(2) },
+    }),
+
+  removeStep: (id: string, index: number) =>
+    apiRequest<DressResponse>(`${BASE}vestidos/${id}/pasos/${index}/`, { method: 'DELETE' }),
+
+  addPayment: (
+    id: string,
+    data: { amount: number; method?: PaymentMethod; date?: string; reference?: string; concept?: string }
+  ) =>
+    apiRequest<DressResponse>(`${BASE}vestidos/${id}/pagos/`, {
+      method: 'POST',
+      body: { ...data, amount: data.amount.toFixed(2) },
+    }),
+
+  addCharge: (id: string, data: { concept: string; amount: number; description?: string }) =>
+    apiRequest<DressResponse>(`${BASE}vestidos/${id}/cargos/`, {
+      method: 'POST',
+      body: { ...data, amount: data.amount.toFixed(2) },
+    }),
+
+  removeCharge: (id: string, chargeId: number) =>
+    apiRequest<DressResponse>(`${BASE}vestidos/${id}/cargos/${chargeId}/`, { method: 'DELETE' }),
+
   completeStep: (id: string) =>
     apiRequest<DressResponse>(`${BASE}vestidos/${id}/completar-paso/`, { method: 'POST' }),
 
@@ -148,11 +251,23 @@ export const productionApi = {
   update: (id: string, data: { deadline?: string | null; priority?: ProdPriority }) =>
     apiRequest<DressResponse>(`${BASE}vestidos/${id}/`, { method: 'PATCH', body: data }),
 
-  addNote: (id: string, text: string, kind: NoteKind) =>
-    apiRequest<DressResponse>(`${BASE}vestidos/${id}/notas/`, {
-      method: 'POST',
-      body: { text, kind },
-    }),
+  /** Observación o incidencia con fotos y, si se pide, un cobro extra. */
+  addNote: (
+    id: string,
+    text: string,
+    kind: NoteKind,
+    options: { images?: File[]; extraAmount?: number | null; extraConcept?: string } = {}
+  ) => {
+    const form = new FormData();
+    form.append('kind', kind);
+    form.append('text', text);
+    for (const image of options.images ?? []) form.append('images', image);
+    if (options.extraAmount && options.extraAmount > 0) {
+      form.append('extraAmount', options.extraAmount.toFixed(2));
+      if (options.extraConcept) form.append('extraConcept', options.extraConcept);
+    }
+    return apiRequest<DressResponse>(`${BASE}vestidos/${id}/notas/`, { method: 'POST', body: form });
+  },
 };
 
 // ============================================================

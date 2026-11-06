@@ -263,8 +263,14 @@ class ContratosTestCase(BaseContratos):
         self.assertEqual(r.status_code, 400)
 
     def test_taller_ve_vestidos_de_contrato_manual(self):
-        self.crear()
+        c = self.crear()["contrato"]
         taller = APIClient(); taller.force_authenticate(self.user_taller)
+        # Sin que la jefa inicie el proceso, no aparecen.
+        r = taller.get("/api/gerencia/personal/vestidos-disponibles/")
+        self.assertEqual(len(r.data), 0)
+        jefa = APIClient(); jefa.force_authenticate(self.jefa)
+        for v in c["vestidos"][:2]:
+            jefa.post(f"/api/core/produccion/vestidos/{v['id']}/iniciar-proceso/")
         r = taller.get("/api/gerencia/personal/vestidos-disponibles/")
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(len(r.data), 2)  # el velo no pasa por el taller
@@ -475,6 +481,13 @@ class ProduccionTestCase(BaseContratos):
         # Saltamos compra/patronaje/corte para llegar a confección
         for _ in range(3):
             self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
+        # Sin iniciar el proceso, la trabajadora no puede empezar.
+        r = taller.post("/api/taller/sesiones-vestido/iniciar/", {"vestido_id": vid}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("aún no inició", r.data["detail"])
+        r = self.jefa_api.post(f"{self.P}{vid}/iniciar-proceso/")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertIsNotNone(r.data["dress"]["steps"][3]["startedAt"])
         r = taller.get("/api/taller/vestidos-disponibles/")
         self.assertEqual(r.status_code, 200, r.data)
         item = next(x for x in r.data if x["id"] == vid)
@@ -520,10 +533,14 @@ class ProduccionTestCase(BaseContratos):
         api2.post(f"/api/taller/sesiones-vestido/{r.data['sesion']['id']}/pausar/", {"motivo": "almuerzo"}, format="json")
         self.assertEqual(self.get(vid)["activeSession"]["status"], "En pausa")
 
-        # Solo la jefa termina el proceso.
+        # Solo la jefa termina el proceso: queda la duración real.
         r = self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
-        self.assertTrue(r.data["dress"]["steps"][3]["done"])
+        paso = r.data["dress"]["steps"][3]
+        self.assertTrue(paso["done"])
+        self.assertIsNotNone(paso["elapsedHours"])
         self.assertEqual(r.data["dress"]["currentIndex"], 4)
+        # El siguiente queda pendiente hasta que la jefa lo inicie.
+        self.assertEqual(r.data["dress"]["steps"][4]["status"], "PENDIENTE")
         self.assertEqual(len(r.data["dress"]["workersSummary"]), 2)
 
     def test_contrato_editado_regenera_pasos(self):
@@ -536,3 +553,201 @@ class ProduccionTestCase(BaseContratos):
         d = self.get(vid)
         self.assertEqual(d["workshop"], "Taller C")
         self.assertNotIn("patronaje", [s["process"] for s in d["steps"]])
+
+
+class JefaTallerTestCase(BaseContratos):
+    """Procesos extra, horas, dinero, fotos y recordatorios."""
+
+    P = "/api/core/produccion/vestidos/"
+
+    def setUp(self):
+        super().setUp()
+        self.jefa_api = APIClient()
+        self.jefa_api.force_authenticate(self.jefa)
+        c = self.crear()["contrato"]
+        self.contrato_id = c["id"]
+        self.vid = c["vestidos"][1]["id"]  # Minimalista, Taller C
+
+    def dress(self):
+        return self.jefa_api.get(f"{self.P}{self.vid}/").data["dress"]
+
+    def test_agregar_y_quitar_proceso_extra(self):
+        from core.models import Operacion
+        prueba = Operacion.objects.get(nombre="prueba 1")
+        antes = self.dress()
+        r = self.jefa_api.post(f"{self.P}{self.vid}/iniciar-proceso/")
+        r = self.jefa_api.post(f"{self.P}{self.vid}/pasos/", {
+            "operationId": prueba.id, "hours": "3", "name": "Prueba extra (pedido de la novia)"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        d = r.data["dress"]
+        self.assertEqual(len(d["steps"]), len(antes["steps"]) + 1)
+        nuevo = d["steps"][1]
+        self.assertTrue(nuevo["isExtra"])
+        self.assertEqual(nuevo["name"], "Prueba extra (pedido de la novia)")
+        self.assertEqual(d["currentIndex"], 0)
+        reservadas = ReservaOperacion.objects.filter(paso_id=nuevo["id"]).aggregate(s=Sum("horas_reservadas"))["s"]
+        self.assertEqual(reservadas, Decimal("3.00"))
+        # cambiar horas de un paso futuro
+        r = self.jefa_api.patch(f"{self.P}{self.vid}/pasos/1/", {"estHours": "5"}, format="json")
+        self.assertEqual(r.data["dress"]["steps"][1]["estHours"], 5.0)
+        self.assertEqual(ReservaOperacion.objects.filter(paso_id=nuevo["id"]).aggregate(s=Sum("horas_reservadas"))["s"], Decimal("5.00"))
+        # quitar
+        r = self.jefa_api.delete(f"{self.P}{self.vid}/pasos/1/")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(len(r.data["dress"]["steps"]), len(antes["steps"]))
+        self.assertFalse(ReservaOperacion.objects.filter(paso_id=nuevo["id"]).exists())
+        # un paso de la ruta no se puede quitar
+        self.assertEqual(self.jefa_api.delete(f"{self.P}{self.vid}/pasos/2/").status_code, 400)
+
+    def test_pagos_y_cobros_extra_suben_el_total(self):
+        d = self.dress()
+        total = d["finance"]["contractTotal"]
+        self.assertEqual(total, 4650.0)
+        r = self.jefa_api.post(f"{self.P}{self.vid}/cargos/", {"concept": "Cambiar escote", "amount": "250"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        f = r.data["dress"]["finance"]
+        self.assertEqual(f["contractTotal"], 4900.0)
+        self.assertEqual(f["dressExtras"], 250.0)
+        self.assertEqual(f["dressTotal"], 1250.0)
+        self.assertEqual(Contrato.objects.get(pk=self.contrato_id).precio_total, Decimal("4900.00"))
+        # el comercial ve el cobro en el contrato
+        c = self.api.get(f"{URL}{self.contrato_id}/").data
+        self.assertEqual(c["total_cargos"], "250.00")
+        self.assertEqual(c["cargos_adicionales"][0]["concepto"], "Cambiar escote")
+        # pago recibido en taller
+        r = self.jefa_api.post(f"{self.P}{self.vid}/pagos/", {"amount": "400", "method": "TRANSFERENCIA"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        f = r.data["dress"]["finance"]
+        self.assertEqual(f["contractPaid"], 1900.0)
+        self.assertEqual(f["contractBalance"], 3000.0)
+        self.assertEqual(MovimientoFinanciero.objects.count(), 3)
+        # no se puede pagar más del saldo
+        r = self.jefa_api.post(f"{self.P}{self.vid}/pagos/", {"amount": "99999"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        # editar el contrato mantiene el cobro extra en el total
+        r = self.api.patch(f"{URL}{self.contrato_id}/", {"observaciones": "ok"}, format="json")
+        self.assertEqual(r.data["contrato"]["precio_total"], "4900.00")
+        # quitar el cobro
+        cargo_id = f["charges"][0]["id"]
+        r = self.jefa_api.delete(f"{self.P}{self.vid}/cargos/{cargo_id}/")
+        self.assertEqual(r.data["dress"]["finance"]["contractTotal"], 4650.0)
+
+    def test_nota_con_fotos_y_cobro(self):
+        import shutil, tempfile
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+        png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+               b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+        media = tempfile.mkdtemp()
+        try:
+            with override_settings(MEDIA_ROOT=media):
+                r = self.jefa_api.post(f"{self.P}{self.vid}/notas/", {
+                    "kind": "observacion", "text": "Se subió el escote 2 cm",
+                    "extraAmount": "120", "extraConcept": "Ajuste de escote",
+                    "images": [SimpleUploadedFile("a.png", png, "image/png"), SimpleUploadedFile("b.png", png, "image/png")],
+                }, format="multipart")
+                self.assertEqual(r.status_code, 201, r.data)
+                nota = r.data["dress"]["notes"][0]
+                self.assertEqual(len(nota["images"]), 2)
+                self.assertTrue(nota["images"][0]["url"].startswith("http"))
+                self.assertEqual(nota["extraCharge"]["amount"], 120.0)
+                self.assertEqual(r.data["dress"]["finance"]["dressExtras"], 120.0)
+                # no se aceptan archivos que no son imagen
+                r = self.jefa_api.post(f"{self.P}{self.vid}/notas/", {
+                    "text": "x", "images": [SimpleUploadedFile("a.pdf", b"%PDF", "application/pdf")]}, format="multipart")
+                self.assertEqual(r.status_code, 400)
+                # las trabajadoras también la ven
+                taller = APIClient(); taller.force_authenticate(self.user_taller)
+                r = taller.get(f"/api/taller/vestidos/{self.vid}/notas/")
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.data[0]["cobro_extra"], 120.0)
+                self.assertEqual(len(r.data[0]["imagenes"]), 2)
+        finally:
+            shutil.rmtree(media, ignore_errors=True)
+
+    def test_recordatorio_primera_prueba(self):
+        from core.models import Contrato as C
+        C.objects.filter(pk=self.contrato_id).update(fecha_firma=self.hoy - timedelta(days=46))
+        r = self.jefa_api.get("/api/core/produccion/recordatorios/")
+        self.assertEqual(r.status_code, 200)
+        tipos = {(a["code"], a["type"]) for a in r.data}
+        self.assertIn((VestidoContrato.objects.get(pk=self.vid).codigo, "PRIMERA_PRUEBA"), tipos)
+        self.assertTrue(all(a["due"] for a in r.data if a["type"] == "PRIMERA_PRUEBA"))
+        self.assertTrue(self.dress()["reminders"])
+        C.objects.filter(pk=self.contrato_id).update(fecha_firma=self.hoy - timedelta(days=10))
+        r = self.jefa_api.get("/api/core/produccion/recordatorios/")
+        self.assertFalse([a for a in r.data if a["type"] == "PRIMERA_PRUEBA"])
+
+
+class SimuladorTestCase(BaseContratos):
+    S = "/api/core/simulador/"
+
+    def sim(self, dias, vestidos=None, **extra):
+        body = {"fecha_entrega": str(self.hoy + timedelta(days=dias)),
+                "vestidos": vestidos or [{"tipo_vestido": self.mini.id, "taller": "A"}], **extra}
+        r = self.api.post(self.S, body, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        return r.data
+
+    def test_factible_con_tiempo(self):
+        d = self.sim(200)
+        self.assertEqual(d["veredicto"], "FACTIBLE", d["condiciones"])
+        self.assertEqual(d["estado"], "ok")
+        self.assertGreater(d["margen_dias"], 7)
+        self.assertTrue(d["areas"])
+        self.assertIn("cuello_botella", d)
+        self.assertIsNone(d["causa"])
+        self.assertTrue(d["resumen_vestidos"][0]["a_tiempo"])
+        self.assertFalse(d["temporada_alta"]["activa"])
+        # no guarda nada
+        self.assertEqual(ReservaOperacion.objects.count(), 0)
+
+    def test_no_factible_sugiere_fecha(self):
+        d = self.sim(10)
+        self.assertEqual(d["veredicto"], "NO_FACTIBLE")
+        self.assertIsNotNone(d["fecha_alternativa"])
+        self.assertGreater(str(d["fecha_alternativa"]), str(self.hoy + timedelta(days=10)))
+        self.assertTrue(d["motivos"])
+        # la fecha sugerida sí es factible
+        dias = (d["fecha_alternativa"] - self.hoy).days
+        self.assertNotEqual(self.sim(dias)["veredicto"], "NO_FACTIBLE")
+
+    def test_bordado_15_dias_antes(self):
+        d = self.sim(200, [{"tipo_vestido": self.sirena.id, "taller": "A"}])
+        bordado = next(o for o in d["vestidos"][0]["operaciones"] if o["operacion"] == "bordado")
+        self.assertGreaterEqual(bordado["inicio"], self.hoy + timedelta(days=200 - 15))
+        self.assertIn("15 días", bordado["regla"])
+
+    def test_carga_real_y_temporada_alta(self):
+        from django.test import override_settings
+        # Se llenan 12 contratos: la carga comprometida sube.
+        for i in range(12):
+            self.crear(adelantos=[], datos_cliente={"nombre": f"N{i}", "documento": f"7{i:07d}"},
+                       vestidos=[{"tipo_vestido": self.mini.id, "taller": "A", "precio": "1"}])
+        with override_settings(FIANCEE_TEMPORADA_ALTA_VESTIDOS=10):
+            d = self.sim(200)
+        self.assertTrue(d["temporada_alta"]["activa"])
+        self.assertGreaterEqual(d["temporada_alta"]["vestidos_en_produccion"], 12)
+        self.assertEqual(d["temporada_alta"]["factor"], 1.2)
+        self.assertNotEqual(d["veredicto"], "FACTIBLE")
+        self.assertGreaterEqual(d["cola"]["vestidos_antes"], 12)
+
+    def test_mas_personal_mas_capacidad(self):
+        antes = self.sim(60)
+        t = Trabajadora.objects.create(nombre="Nueva", area="CONFECCION")
+        t.habilidades.set(Operacion.objects.filter(area_responsable="CONFECCION"))
+        for dia in range(6):
+            DisponibilidadSemanal.objects.create(trabajadora=t, dia_semana=dia, horas_disponibles=Decimal("6"))
+        despues = self.sim(60)
+        cap = lambda d: next(a["capacidad"] for a in d["areas"] if a["area"] == "CONFECCION")
+        self.assertGreater(cap(despues), cap(antes))
+
+    def test_validaciones_y_permisos(self):
+        r = self.api.post(self.S, {"fecha_entrega": str(self.hoy - timedelta(days=1)),
+                                   "vestidos": [{"tipo_vestido": self.mini.id, "taller": "A"}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.api.post(self.S, {"fecha_entrega": str(self.hoy + timedelta(days=50)),
+                                   "vestidos": [{"tipo_vestido": self.mini.id, "taller": "T"}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        taller = APIClient(); taller.force_authenticate(self.user_taller)
+        self.assertEqual(taller.post(self.S, {}, format="json").status_code, 403)

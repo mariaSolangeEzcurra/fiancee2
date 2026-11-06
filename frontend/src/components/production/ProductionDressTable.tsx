@@ -1,4 +1,4 @@
-import { ChevronRightIcon } from 'lucide-react';
+import { BellRingIcon, ChevronRightIcon } from 'lucide-react';
 
 import { prodRisk, prodTotals } from '../../services/productionApi';
 import type { ProdDress } from '../../services/productionApi';
@@ -45,7 +45,12 @@ export function ProductionDressTable({ dresses, onOpen }: Props) {
                 className="cursor-pointer transition-colors duration-150 hover:bg-cream/60"
               >
                 <td className="px-4 py-3">
-                  <p className="font-medium text-cocoa">{d.code}</p>
+                  <p className="font-medium text-cocoa">
+                    {d.code}
+                    {d.reminders.some((r) => r.due) && (
+                      <BellRingIcon className="ml-1.5 inline h-3.5 w-3.5 text-amber-700" aria-label="Recordatorio pendiente" />
+                    )}
+                  </p>
                   <p className="text-xs text-cocoa-muted">{d.dressType}</p>
                 </td>
                 <td className="px-4 py-3">
@@ -62,7 +67,9 @@ export function ProductionDressTable({ dresses, onOpen }: Props) {
                       <p className="text-xs text-cocoa-muted">
                         {d.activeSession
                           ? `${d.activeSession.paused ? 'En pausa' : 'Trabajando'}: ${d.activeSession.worker}`
-                          : step?.workers.join(', ') || 'Sin asignar'}
+                          : step?.status === 'PENDIENTE' && !step.isDelivery
+                            ? 'Sin iniciar'
+                            : step?.workers.join(', ') || 'Sin asignar'}
                       </p>
                     </>
                   )}

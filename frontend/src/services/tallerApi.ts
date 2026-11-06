@@ -241,6 +241,20 @@ export interface VestidoDisponible {
   cliente?: string;
   tipo_vestido?: string;
   fecha_entrega?: string;
+  /** Proceso que la jefa de taller ya inició. */
+  proceso_actual?: string;
+  es_de_mi_area?: boolean;
+  asignada_a_mi?: boolean;
+  /** Observaciones, fotos y cobros extra (visibles para todas). */
+  observaciones?: {
+    id: number;
+    tipo: 'OBSERVACION' | 'INCIDENCIA';
+    texto: string;
+    autor: string;
+    fecha: string;
+    imagenes: string[];
+    cobro_extra: number | null;
+  }[];
 }
 // ─── Tipos: sesiones de vestidos ───────────────────────
 
