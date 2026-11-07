@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .personal_views import CapacidadAreasView, PersonalDetalleView, PersonalTallerView
 from .views import (
     CargosVestidoView,
     CargoVestidoView,
@@ -33,5 +34,8 @@ urlpatterns = [
     path("vestidos/<int:pk>/notas/", NotasVestidoView.as_view(), name="produccion-notas"),
     path("recordatorios/", RecordatoriosView.as_view(), name="produccion-recordatorios"),
     path("operaciones/", OperacionesView.as_view(), name="produccion-operaciones"),
+    path("personal/", PersonalTallerView.as_view(), name="produccion-personal"),
+    path("personal/<int:pk>/", PersonalDetalleView.as_view(), name="produccion-personal-detalle"),
+    path("capacidad-areas/", CapacidadAreasView.as_view(), name="produccion-capacidad-areas"),
     path("trabajadoras/", TrabajadorasProduccionView.as_view(), name="produccion-trabajadoras"),
 ]

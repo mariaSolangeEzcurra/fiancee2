@@ -1,7 +1,9 @@
 from decimal import Decimal
 
 from django.conf import settings
-from django.core.validators import MinValueValidator
+from datetime import timedelta
+
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -849,6 +851,61 @@ class CargoAdicional(models.Model):
         return f"{self.vestido.codigo} - {self.concepto}: {self.monto}"
 
 
+class Notificacion(models.Model):
+    """Aviso para un usuario (asignaciones, pagos, recordatorios…)."""
+
+    class Tipo(models.TextChoices):
+        ASIGNACION = "ASIGNACION", "Asignación"
+        PROCESO = "PROCESO", "Proceso"
+        CONTRATO = "CONTRATO", "Contrato"
+        PAGO = "PAGO", "Pago"
+        COBRO = "COBRO", "Cobro adicional"
+        RECORDATORIO = "RECORDATORIO", "Recordatorio"
+        ATRASO = "ATRASO", "Atraso"
+        JORNADA = "JORNADA", "Jornada"
+
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notificaciones",
+    )
+    tipo = models.CharField(max_length=15, choices=Tipo.choices)
+    titulo = models.CharField(max_length=150)
+    mensaje = models.TextField(blank=True)
+    vestido = models.ForeignKey(
+        VestidoContrato,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notificaciones",
+    )
+    contrato = models.ForeignKey(
+        Contrato,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notificaciones",
+    )
+    # Evita repetir el mismo aviso automático (recordatorios, atrasos).
+    clave = models.CharField(max_length=120, blank=True)
+    leida = models.BooleanField(default=False)
+    creada_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-creada_en", "-id"]
+        indexes = [models.Index(fields=["usuario", "leida"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["usuario", "clave"],
+                condition=~models.Q(clave=""),
+                name="notificacion_unica_por_clave",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.usuario} - {self.titulo}"
+
+
 # ============================================================
 # 5. FINANZAS
 # ============================================================
@@ -904,8 +961,10 @@ class Pago(models.Model):
         related_name="pagos",
     )
 
-    # 1, 2 o 3 si el pago corresponde al primer, segundo o tercer
-    # adelanto registrado en el contrato. Nulo para otros pagos.
+    observaciones = models.TextField(blank=True)
+
+    # Número del pago del contrato (1 = primer pago, 2 = segundo pago…).
+    # Es el mismo número en el contrato y en el taller. Nulo = otro pago.
     orden_adelanto = models.PositiveSmallIntegerField(
         null=True,
         blank=True,
@@ -994,6 +1053,15 @@ class MovimientoFinanciero(models.Model):
         related_name="movimientos_financieros",
     )
 
+    # Un gasto pagado genera un único movimiento de egreso.
+    gasto = models.OneToOneField(
+        "Gasto",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="movimiento_financiero",
+    )
+
     creado_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1035,8 +1103,124 @@ class CostoOperativo(models.Model):
     activo = models.BooleanField(default=True)
     observaciones = models.TextField(blank=True)
 
+    # Día del mes en que se suele pagar (para avisar "vence el 30").
+    dia_pago = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(31)]
+    )
+
     def __str__(self):
         return self.nombre
+
+    def monto_mensual(self):
+        if self.frecuencia == self.Frecuencia.SEMANAL:
+            return (self.importe * Decimal("52") / Decimal("12")).quantize(Decimal("0.01"))
+        if self.frecuencia == self.Frecuencia.ANUAL:
+            return (self.importe / Decimal("12")).quantize(Decimal("0.01"))
+        return self.importe
+
+    def aplica_en(self, mes):
+        """¿Este gasto fijo corresponde al mes (primer día del mes)?"""
+        if not self.activo:
+            return False
+        fin_mes = (mes.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        if self.fecha_inicio > fin_mes:
+            return False
+        if self.fecha_fin and self.fecha_fin < mes:
+            return False
+        if self.frecuencia == self.Frecuencia.UNICO:
+            return mes <= self.fecha_inicio <= fin_mes
+        return True
+
+
+class Gasto(models.Model):
+    """Gasto real del negocio (pagado o por pagar)."""
+
+    class Estado(models.TextChoices):
+        PAGADO = "PAGADO", "Pagado"
+        PENDIENTE = "PENDIENTE", "Por pagar"
+
+    fecha = models.DateField(default=timezone.localdate)
+    concepto = models.CharField(max_length=200)
+    categoria = models.ForeignKey(CategoriaFinanciera, on_delete=models.PROTECT, related_name="gastos")
+    importe = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    metodo = models.CharField(max_length=20, choices=Pago.Metodo.choices, default=Pago.Metodo.EFECTIVO)
+    proveedor = models.CharField(max_length=150, blank=True)
+    comprobante = models.CharField(max_length=60, blank=True)
+    estado = models.CharField(max_length=10, choices=Estado.choices, default=Estado.PAGADO)
+    vence = models.DateField(null=True, blank=True)
+    # Si es el pago de un gasto fijo, de qué fijo y de qué mes.
+    costo_fijo = models.ForeignKey(
+        CostoOperativo, on_delete=models.SET_NULL, null=True, blank=True, related_name="gastos"
+    )
+    mes_fijo = models.DateField(null=True, blank=True)
+    observaciones = models.TextField(blank=True)
+    registrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="gastos_registrados"
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-fecha", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["costo_fijo", "mes_fijo"],
+                condition=models.Q(costo_fijo__isnull=False),
+                name="un_pago_por_fijo_y_mes",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        """Un gasto pagado se registra como egreso en los movimientos."""
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if self.estado == self.Estado.PAGADO:
+                MovimientoFinanciero.objects.update_or_create(
+                    gasto=self,
+                    defaults={
+                        "fecha": self.fecha,
+                        "tipo": MovimientoFinanciero.Tipo.EGRESO,
+                        "categoria": self.categoria,
+                        "importe": self.importe,
+                        "descripcion": self.concepto[:250],
+                    },
+                )
+            else:
+                MovimientoFinanciero.objects.filter(gasto=self).delete()
+
+    def __str__(self):
+        return f"{self.concepto} - {self.importe}"
+
+
+class MetaMensual(models.Model):
+    """Meta de ingresos de un mes (si no hay, se usa la meta general)."""
+
+    mes = models.DateField(unique=True)
+    meta = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal("0"))])
+    nota = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["-mes"]
+
+
+class ConfiguracionNegocio(models.Model):
+    """Ajustes generales que configura gerencia (una sola fila)."""
+
+    meta_mensual = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    margen_objetivo = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("30"),
+        validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
+    )
+    nombre_negocio = models.CharField(max_length=120, default="Fiancée")
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def obtener(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def meta_de(self, mes):
+        m = MetaMensual.objects.filter(mes=mes).first()
+        return (m.meta, True) if m else (self.meta_mensual, False)
 
 
 # ============================================================
@@ -1412,6 +1596,17 @@ class RegistroAsistencia(models.Model):
 
     observaciones_entrada = models.TextField(blank=True)
     observaciones_salida = models.TextField(blank=True)
+
+    # Si la trabajadora no marcó su salida, se cierra sola con su horario.
+    cierre_automatico = models.BooleanField(default=False)
+    # Horas extra declaradas (fuera del horario), con su motivo.
+    horas_extra = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    motivo_horas_extra = models.CharField(max_length=250, blank=True)
 
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)

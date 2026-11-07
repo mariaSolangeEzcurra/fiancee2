@@ -106,7 +106,7 @@ class ContratosTestCase(BaseContratos):
         self.assertEqual(Decimal(c["precio_total"]), Decimal("4650.00"))
         self.assertEqual(Decimal(c["total_pagado"]), Decimal("1500.00"))
         self.assertEqual(Decimal(c["saldo_pendiente"]), Decimal("3150.00"))
-        self.assertEqual([a["concepto"] for a in c["adelantos"]], ["Primer adelanto", "Segundo adelanto"])
+        self.assertEqual([a["concepto"] for a in c["adelantos"]], ["Primer pago", "Segundo pago"])
         self.assertEqual(MovimientoFinanciero.objects.count(), 2)
         self.assertEqual(c["asesora"], self.comercial.id)
         # servicios deducidos de los ítems
@@ -271,8 +271,12 @@ class ContratosTestCase(BaseContratos):
         jefa = APIClient(); jefa.force_authenticate(self.jefa)
         for v in c["vestidos"][:2]:
             jefa.post(f"/api/core/produccion/vestidos/{v['id']}/iniciar-proceso/")
+        # Solo ve los procesos de sus habilidades: el primer paso no es confección.
         r = taller.get("/api/gerencia/personal/vestidos-disponibles/")
         self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(len(r.data), 0)
+        self.trab_taller.habilidades.set(Operacion.objects.all())
+        r = taller.get("/api/gerencia/personal/vestidos-disponibles/")
         self.assertEqual(len(r.data), 2)  # el velo no pasa por el taller
         self.assertEqual(r.data[0]["cliente"], "María Pérez")
 
@@ -390,7 +394,7 @@ class ProduccionTestCase(BaseContratos):
         self.assertEqual(len(r.data), 2)  # el velo sin taller no aparece
         d = next(x for x in r.data if x["vestidoId"] == self.v1["id"])
         self.assertEqual(d["workshop"], "Taller A")
-        self.assertEqual(d["status"], "En cola")
+        self.assertEqual(d["status"], "Sin iniciar")
         self.assertEqual(d["currentIndex"], 0)
         self.assertEqual(d["steps"][0]["process"], "compra materiales")
         self.assertTrue(d["steps"][-1]["isDelivery"])
@@ -422,7 +426,7 @@ class ProduccionTestCase(BaseContratos):
         r = self.jefa_api.post(f"{self.P}{vid}/completar-paso/")
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(r.data["dress"]["currentIndex"], 1)
-        self.assertEqual(r.data["dress"]["status"], "En producción")
+        self.assertEqual(r.data["dress"]["status"], "En proceso")
         self.assertTrue(r.data["dress"]["steps"][0]["done"])
         self.assertEqual(Contrato.objects.get(pk=self.contrato_id).estado, "EN_PRODUCCION")
         for _ in range(n - 1):
@@ -431,7 +435,7 @@ class ProduccionTestCase(BaseContratos):
         self.assertEqual(self.jefa_api.post(f"{self.P}{vid}/completar-paso/").status_code, 400)
         # Volver a un proceso lo reabre
         r = self.jefa_api.post(f"{self.P}{vid}/paso-actual/", {"index": 2}, format="json")
-        self.assertEqual(r.data["dress"]["status"], "En producción")
+        self.assertEqual(r.data["dress"]["status"], "En proceso")
         self.assertFalse(r.data["dress"]["steps"][2]["done"])
 
     def test_completar_paso_libera_reservas_futuras(self):
@@ -751,3 +755,168 @@ class SimuladorTestCase(BaseContratos):
         self.assertEqual(r.status_code, 400)
         taller = APIClient(); taller.force_authenticate(self.user_taller)
         self.assertEqual(taller.post(self.S, {}, format="json").status_code, 403)
+
+
+class JornadaYNotificacionesTestCase(BaseContratos):
+    def test_jornada_olvidada_se_cierra_con_su_horario(self):
+        from core.models import Notificacion, RegistroAsistencia
+
+        ayer = timezone.localdate() - timedelta(days=1)
+        entrada = timezone.make_aware(timezone.datetime.combine(ayer, timezone.datetime.min.time())) + timedelta(hours=8)
+        reg = RegistroAsistencia.objects.create(trabajadora=self.trab_taller, fecha=ayer, entrada=entrada)
+        taller = APIClient(); taller.force_authenticate(self.user_taller)
+        r = taller.get("/api/taller/mi-panel/")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        reg.refresh_from_db()
+        self.assertTrue(reg.cierre_automatico)
+        self.assertIsNotNone(reg.salida)
+        self.assertLessEqual((reg.salida - reg.entrada).total_seconds(), 8 * 3600 + 1)
+        self.assertIsNotNone(r.data["ultima_jornada_automatica"])
+        # Le llega aviso a ella y a la jefa.
+        self.assertTrue(Notificacion.objects.filter(usuario=self.user_taller, tipo="JORNADA").exists())
+        self.assertTrue(Notificacion.objects.filter(usuario=self.jefa, tipo="JORNADA").exists())
+
+        r = taller.post("/api/taller/horas-extra/", {"horas": "1.5", "motivo": "Acabé el bordado"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        reg.refresh_from_db()
+        self.assertEqual(reg.horas_extra, Decimal("1.50"))
+        self.assertEqual(reg.motivo_horas_extra, "Acabé el bordado")
+
+    def test_notificaciones_api(self):
+        self.crear()
+        jefa = APIClient(); jefa.force_authenticate(self.jefa)
+        r = jefa.get("/api/core/notificaciones/")
+        self.assertEqual(r.status_code, 200)
+        self.assertGreaterEqual(r.data["unread"], 1)
+        primera = r.data["items"][0]
+        self.assertEqual(jefa.post(f"/api/core/notificaciones/{primera['id']}/leer/").status_code, 200)
+        jefa.post("/api/core/notificaciones/leer-todas/")
+        self.assertEqual(jefa.get("/api/core/notificaciones/").data["unread"], 0)
+
+
+class PersonalYCapacidadJefaTestCase(BaseContratos):
+    def test_personal_lista_detalle_y_capacidad(self):
+        from core.models import RegistroAsistencia
+
+        self.crear()
+        ayer = timezone.localdate() - timedelta(days=1)
+        entrada = timezone.make_aware(timezone.datetime.combine(ayer, timezone.datetime.min.time())) + timedelta(hours=8)
+        RegistroAsistencia.objects.create(
+            trabajadora=self.trab_taller, fecha=ayer, entrada=entrada,
+            salida=entrada + timedelta(hours=9), horas_extra=Decimal("1"), motivo_horas_extra="Bordado urgente",
+        )
+        jefa = APIClient(); jefa.force_authenticate(self.jefa)
+
+        r = jefa.get("/api/core/produccion/personal/")
+        self.assertEqual(r.status_code, 200)
+        yo = next(w for w in r.data if w["id"] == str(self.trab_taller.id))
+        self.assertEqual(len(yo["schedule"]), 7)
+        self.assertTrue(yo["skills"])
+
+        r = jefa.get(f"/api/core/produccion/personal/{self.trab_taller.id}/?dias=7")
+        self.assertEqual(r.status_code, 200)
+        dia = next(d for d in r.data["history"] if str(d["date"]) == str(ayer))
+        self.assertEqual(dia["extra"], 1.0)
+        self.assertEqual(dia["extraReason"], "Bordado urgente")
+        self.assertEqual(r.data["totals"]["daysWorked"], 1)
+
+        r = jefa.get("/api/core/produccion/capacidad-areas/?semana=0")
+        self.assertEqual(r.status_code, 200)
+        confeccion = next(a for a in r.data["areas"] if a["code"] == "CONFECCION")
+        self.assertIn(self.trab_taller.nombre, [w["name"] for w in confeccion["workers"]])
+        self.assertGreater(confeccion["capacity"], 0)
+
+        # La trabajadora no puede ver el personal.
+        taller = APIClient(); taller.force_authenticate(self.user_taller)
+        self.assertEqual(taller.get("/api/core/produccion/personal/").status_code, 403)
+
+
+class ComercialTestCase(BaseContratos):
+    def test_inicio_ingresos_y_vestidos_solo_lectura(self):
+        c = self.crear()["contrato"]
+        api = self.api  # comercial
+        r = api.get("/api/core/comercial/inicio/")
+        self.assertEqual(r.status_code, 200)
+        self.assertGreater(r.data["kpis"]["collectedMonth"], 0)
+        self.assertTrue(any(d["contractId"] == c["id"] for d in r.data["deliveries"]) or r.data["deliveries"] == [])
+
+        r = api.get("/api/core/comercial/ingresos/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["totals"]["count"], len(r.data["payments"]))
+        self.assertGreater(r.data["totals"]["total"], 0)
+        r = api.get("/api/core/comercial/ingresos/?origen=taller")
+        self.assertEqual(r.data["totals"]["total"], 0)
+
+        # Comercial ve los vestidos pero no los cambia.
+        r = api.get("/api/core/produccion/vestidos/")
+        self.assertEqual(r.status_code, 200)
+        vid = r.data[0]["id"]
+        self.assertEqual(api.post(f"/api/core/produccion/vestidos/{vid}/iniciar-proceso/").status_code, 403)
+
+        # La jefa de taller no entra a ingresos.
+        jefa = APIClient(); jefa.force_authenticate(self.jefa)
+        self.assertEqual(jefa.get("/api/core/comercial/ingresos/").status_code, 403)
+
+
+class GerenciaFinanzasTestCase(BaseContratos):
+    def setUp(self):
+        super().setUp()
+        Usuario = get_user_model()
+        self.gerente = Usuario.objects.create_user("gere", password="x", rol="gerencia")
+        self.g = APIClient(); self.g.force_authenticate(self.gerente)
+
+    def test_flujo_completo(self):
+        from core.models import CategoriaFinanciera, MovimientoFinanciero
+
+        self.crear()  # genera ingresos (adelantos)
+        cat = CategoriaFinanciera.objects.get(nombre="Telas y encajes")
+        alquiler = CategoriaFinanciera.objects.get(nombre="Alquiler del local")
+        mes = timezone.localdate().strftime("%Y-%m")
+
+        # Meta general y meta del mes
+        r = self.g.patch("/api/core/gerencia/configuracion/", {"monthlyGoal": "40000", "targetMargin": "35"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["monthlyGoal"], 40000.0)
+        r = self.g.post("/api/core/gerencia/metas/", {"month": mes, "goal": "50000"}, format="json")
+        self.assertEqual(r.data["customGoals"][0]["goal"], 50000.0)
+
+        # Gasto pagado y uno por pagar
+        r = self.g.post("/api/core/gerencia/gastos/", {"concept": "Tul francés", "amount": "350.50", "categoryId": cat.id, "supplier": "Gamarra"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        gid = r.data["id"]
+        self.assertTrue(MovimientoFinanciero.objects.filter(gasto_id=gid, tipo="EGRESO").exists())
+        self.g.post("/api/core/gerencia/gastos/", {"concept": "Luz", "amount": "120", "categoryId": cat.id, "status": "PENDIENTE"}, format="json")
+        self.assertEqual(self.g.post("/api/core/gerencia/gastos/", {"concept": "", "amount": "1", "categoryId": cat.id}, format="json").status_code, 400)
+
+        # Gasto fijo mensual y su pago
+        r = self.g.post("/api/core/gerencia/fijos/", {"name": "Alquiler", "amount": "2500", "categoryId": alquiler.id, "payDay": 30}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        fid = r.data["id"]
+
+        r = self.g.get(f"/api/core/gerencia/finanzas/?mes={mes}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["expense"]["paid"], 350.5)
+        self.assertEqual(r.data["expense"]["pendingMonth"], 2620.0)
+        self.assertEqual(r.data["goal"]["amount"], 50000.0)
+        self.assertGreater(r.data["income"]["total"], 0)
+        self.assertEqual(r.data["result"]["profitEstimated"], round(r.data["income"]["total"] - 2970.5, 2))
+
+        r = self.g.post(f"/api/core/gerencia/fijos/{fid}/pagar/", {"month": mes}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(self.g.post(f"/api/core/gerencia/fijos/{fid}/pagar/", {"month": mes}, format="json").status_code, 400)
+        r = self.g.get(f"/api/core/gerencia/finanzas/?mes={mes}")
+        self.assertEqual(r.data["expense"]["paid"], 2850.5)
+        self.assertEqual(r.data["expense"]["pendingMonth"], 120.0)
+
+        # Borrar un fijo con pagos lo desactiva
+        r = self.g.delete(f"/api/core/gerencia/fijos/{fid}/")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["fixed"]["active"])
+
+        self.assertEqual(self.g.get("/api/core/gerencia/horas/").status_code, 200)
+        r = self.g.get("/api/core/gerencia/indicadores/?meses=3")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data["series"]), 3)
+
+        # Comercial no entra a finanzas de gerencia
+        self.assertEqual(self.api.get("/api/core/gerencia/finanzas/").status_code, 403)

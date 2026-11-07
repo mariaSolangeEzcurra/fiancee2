@@ -59,7 +59,8 @@ function createInitialInput(): ContractInput {
     client: '',
     city: '',
     eventDate,
-    deliveryDate: addCalendarDays(eventDate, -7),
+    // Por defecto: entrega 5 días antes del evento.
+    deliveryDate: addCalendarDays(eventDate, -5),
     price: 0,
     corteId: '',
     workshop: 'Taller A',
@@ -203,7 +204,6 @@ function getHoursFromCatalog(
 function validateInput(input?: ContractInput | null): string | null {
   if (!input) return 'Completa los datos antes de simular.';
   if (!input.corteId) return 'Selecciona un vestido del catálogo de Django.';
-  if (!input.client.trim()) return 'Ingresa el nombre de la clienta.';
 
   if (!input.eventDate || !input.deliveryDate) {
     return 'Completa la fecha del evento y la fecha de entrega.';

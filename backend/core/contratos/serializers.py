@@ -160,7 +160,7 @@ class PagoSerializer(serializers.ModelSerializer):
         model = Pago
         fields = [
             "id", "orden_adelanto", "concepto", "importe", "fecha",
-            "metodo", "referencia", "confirmado", "vestido", "vestido_codigo",
+            "metodo", "referencia", "observaciones", "confirmado", "vestido", "vestido_codigo",
         ]
         read_only_fields = fields
 
@@ -377,6 +377,8 @@ class ItemContratoSerializer(serializers.Serializer):
 
 
 class AdelantoInputSerializer(serializers.Serializer):
+    concepto = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    observaciones = serializers.CharField(required=False, allow_blank=True)
     importe = serializers.DecimalField(
         max_digits=12, decimal_places=2, min_value=CERO,
         required=False, allow_null=True,

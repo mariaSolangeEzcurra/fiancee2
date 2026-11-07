@@ -169,6 +169,49 @@ def _reservas_del_paso(vestido, paso):
 
 
 # ============================================================
+# QUIÉN PUEDE HACER CADA PROCESO
+# ============================================================
+
+ORDINALES_PAGO = {
+    1: "Primer pago", 2: "Segundo pago", 3: "Tercer pago", 4: "Cuarto pago",
+    5: "Quinto pago", 6: "Sexto pago", 7: "Séptimo pago", 8: "Octavo pago",
+}
+
+
+def operacion_del_paso(paso):
+    if paso.operacion_id:
+        return paso.operacion
+    return paso.plantilla.operacion if paso.plantilla_id else None
+
+
+def elegibles_por_operacion():
+    """
+    {operacion_id: {ids de trabajadoras que pueden hacerla}}.
+    Puede quien tiene la habilidad. Si nadie la tiene marcada, puede
+    quien pertenece al área responsable.
+    """
+    trabajadoras = list(Trabajadora.objects.filter(activa=True).prefetch_related("habilidades"))
+    por_operacion = {}
+    for t in trabajadoras:
+        for op in t.habilidades.all():
+            por_operacion.setdefault(op.id, set()).add(t.id)
+    resultado = {}
+    for op in Operacion.objects.filter(activa=True):
+        resultado[op.id] = por_operacion.get(op.id) or {
+            t.id for t in trabajadoras if t.area == op.area_responsable
+        }
+    return resultado
+
+
+def puede_hacer(trabajadora, paso, elegibles=None):
+    operacion = operacion_del_paso(paso)
+    if operacion is None:
+        return False
+    elegibles = elegibles if elegibles is not None else elegibles_por_operacion()
+    return trabajadora.id in elegibles.get(operacion.id, set())
+
+
+# ============================================================
 # INICIO Y CIERRE DE PROCESOS
 # ============================================================
 
@@ -225,6 +268,16 @@ def iniciar_proceso(vestido, usuario=None):
         vestido.estado = VestidoContrato.Estado.EN_PROCESO
         vestido.save(update_fields=["estado"])
     _marcar_contrato_en_produccion(vestido.contrato)
+
+    from core.services.notificaciones import notificar
+
+    notificar(
+        [t.usuario for t in paso.trabajadoras.select_related("usuario") if t.usuario_id],
+        "PROCESO",
+        f"Ya puedes avanzar · {vestido.codigo}",
+        f"La jefa de taller inició «{paso.nombre}». Ya aparece en tus vestidos.",
+        vestido=vestido,
+    )
     return paso
 
 
@@ -329,7 +382,26 @@ def alternar_trabajadora(vestido, indice, trabajadora_id):
     if paso.trabajadoras.filter(pk=trabajadora.pk).exists():
         paso.trabajadoras.remove(trabajadora)
         return paso, False
+    if not puede_hacer(trabajadora, paso):
+        operacion = operacion_del_paso(paso)
+        raise ValidationError(
+            f"{trabajadora.nombre} no tiene la habilidad «{operacion.nombre if operacion else paso.nombre}». "
+            "Asígnale esa habilidad en Personal o elige a otra persona."
+        )
     paso.trabajadoras.add(trabajadora)
+
+    if trabajadora.usuario_id:
+        from core.services.notificaciones import notificar
+
+        listo = paso.estado == PasoVestido.Estado.EN_CURSO
+        notificar(
+            [trabajadora.usuario],
+            "ASIGNACION",
+            f"Te asignaron un vestido · {vestido.codigo}",
+            f"Proceso: {paso.nombre}. "
+            + ("Ya puedes avanzar desde Mi jornada." if listo else "Podrás avanzar cuando la jefa inicie el proceso."),
+            vestido=vestido,
+        )
     return paso, True
 
 
@@ -524,8 +596,20 @@ def recalcular_total_contrato(contrato):
     return contrato.precio_total
 
 
+def siguiente_numero_pago(contrato):
+    usados = set(Pago.objects.filter(contrato=contrato, orden_adelanto__isnull=False).values_list("orden_adelanto", flat=True))
+    return next(n for n in range(1, 100) if n not in usados)
+
+
 @transaction.atomic
-def registrar_pago(vestido, importe, usuario=None, metodo=None, fecha=None, referencia="", concepto=""):
+def registrar_pago(
+    vestido, importe, usuario=None, metodo=None, fecha=None, referencia="",
+    concepto="", numero=None, observaciones="",
+):
+    """
+    Pago recibido en el taller. `numero` (1, 2, 3…) es el número de pago
+    del contrato: el mismo que ve el área comercial ("Segundo pago").
+    """
     importe = Decimal(importe).quantize(Decimal("0.01"))
     if importe <= 0:
         raise ValidationError("El monto debe ser mayor que cero.")
@@ -533,17 +617,36 @@ def registrar_pago(vestido, importe, usuario=None, metodo=None, fecha=None, refe
     saldo = contrato.saldo_pendiente
     if importe > saldo:
         raise ValidationError(f"El pago supera el saldo pendiente del contrato (S/ {saldo}).")
-    return Pago.objects.create(
+    if numero:
+        if Pago.objects.filter(contrato=contrato, orden_adelanto=numero).exists():
+            raise ValidationError(
+                f"El {ORDINALES_PAGO.get(numero, f'pago {numero}').lower()} ya está registrado en este contrato."
+            )
+    nombre = (concepto or "").strip() or (ORDINALES_PAGO.get(numero, f"Pago {numero}") if numero else "Pago")
+    pago = Pago.objects.create(
         contrato=contrato,
         vestido=vestido,
         importe=importe,
         fecha=fecha or timezone.localdate(),
         metodo=metodo or Pago.Metodo.EFECTIVO,
         referencia=referencia or "",
-        concepto=concepto or f"Pago recibido en taller - {vestido.codigo}",
+        concepto=nombre,
+        observaciones=observaciones or "",
+        orden_adelanto=numero or None,
         confirmado=True,
         registrado_por=usuario,
     )
+
+    from core.services.notificaciones import ROL_COMERCIAL, ROL_GERENCIA, cliente_de, notificar, usuarios_con_rol
+
+    notificar(
+        usuarios_con_rol(ROL_COMERCIAL, ROL_GERENCIA),
+        "PAGO",
+        f"Pago registrado en taller · {contrato.numero}",
+        f"{nombre}: S/ {importe} de {cliente_de(contrato)} ({vestido.codigo}). Saldo: S/ {contrato.saldo_pendiente}.",
+        vestido=vestido,
+    )
+    return pago
 
 
 @transaction.atomic
@@ -562,7 +665,18 @@ def agregar_cargo(vestido, concepto, monto, usuario=None, descripcion="", nota=N
         monto=monto,
         registrado_por=usuario,
     )
-    recalcular_total_contrato(vestido.contrato)
+    total = recalcular_total_contrato(vestido.contrato)
+
+    from core.services.notificaciones import ROL_COMERCIAL, ROL_GERENCIA, cliente_de, notificar, usuarios_con_rol
+
+    notificar(
+        usuarios_con_rol(ROL_COMERCIAL, ROL_GERENCIA),
+        "COBRO",
+        f"Cobro adicional · {vestido.contrato.numero}",
+        f"{cargo.concepto}: S/ {monto} para {cliente_de(vestido.contrato)} ({vestido.codigo}). "
+        f"Nuevo total del contrato: S/ {total}.",
+        vestido=vestido,
+    )
     return cargo
 
 

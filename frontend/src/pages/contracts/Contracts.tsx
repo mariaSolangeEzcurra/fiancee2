@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { FilePlus2Icon, RefreshCwIcon, SearchIcon } from 'lucide-react';
 
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -28,12 +29,24 @@ const estadoCls: Record<EstadoContrato, string> = {
 
 type View = { mode: 'list' } | { mode: 'form'; id: number | null; prefill?: ContractPrefill | null };
 
-export function Contracts() {
+export function Contracts({ viewOnly = false }: { viewOnly?: boolean } = {}) {
+  const [params, setParams] = useSearchParams();
   const [view, setView] = useState<View>(() => {
     // Si se llega desde el simulador, se abre el formulario prellenado.
     const prefill = takeSimulatorPrefill();
-    return prefill ? { mode: 'form', id: null, prefill } : { mode: 'list' };
+    if (prefill) return { mode: 'form', id: null, prefill };
+    // Desde una notificación: /fio/contratos?abrir=12
+    const abrir = Number(params.get('abrir'));
+    return abrir > 0 ? { mode: 'form', id: abrir } : { mode: 'list' };
   });
+  useEffect(() => {
+    if (params.has('abrir')) {
+      const abrir = Number(params.get('abrir'));
+      if (abrir > 0) setView({ mode: 'form', id: abrir });
+      params.delete('abrir');
+      setParams(params, { replace: true });
+    }
+  }, [params, setParams]);
 
   const [filters, setFilters] = useState<FiltrosContratos>({ q: '', estado: '', origen: '' });
   const [query, setQuery] = useState('');
@@ -73,6 +86,7 @@ export function Contracts() {
         key={view.id ?? 'nuevo'}
         contractId={view.id}
         prefill={view.prefill}
+        viewOnly={viewOnly}
         onBack={() => setView({ mode: 'list' })}
         onSaved={(contrato) => {
           // Un contrato nuevo pasa a modo edición tras guardarse.
@@ -88,19 +102,23 @@ export function Contracts() {
     <div className="space-y-6">
       <PageHeader
         title="Contratos"
-        subtitle="Registra contratos directamente o desde el simulador. Cada contrato reserva automáticamente la capacidad del taller."
+        subtitle={
+          viewOnly
+            ? 'Todos los contratos con sus vestidos, pagos y saldos. Solo lectura: los registra y modifica comercial.'
+            : 'Registra contratos directamente o desde el simulador. Cada contrato reserva automáticamente la capacidad del taller.'
+        }
       />
 
       <section className="sticky top-0 z-20 rounded-2xl border border-line bg-paper/95 p-3 shadow-sm backdrop-blur sm:p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          {!viewOnly && <button
             type="button"
             onClick={() => setView({ mode: 'form', id: null })}
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-cocoa px-4 py-3 text-sm font-semibold text-white hover:bg-[#3a281f]"
           >
             <FilePlus2Icon className="h-4 w-4" />
             Nuevo contrato
-          </button>
+          </button>}
 
           <div className="relative min-w-[220px] flex-1">
             <SearchIcon className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-cocoa-muted" />

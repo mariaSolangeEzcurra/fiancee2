@@ -49,7 +49,6 @@ function dressKey(input: ContractInput): string {
 }
 
 function validateInput(input: ContractInput): string | null {
-  if (!input.client.trim()) return 'Ingresa el nombre de la clienta.';
   if (!input.corteId) return 'Selecciona un vestido del catálogo.';
   if (!input.eventDate || !input.deliveryDate) {
     return 'Completa las fechas del evento y de entrega.';
@@ -430,11 +429,7 @@ export function Simulator() {
           </ol>
 
           <div className="border-t border-line px-5 py-3 text-xs text-cocoa-muted">
-            {sim.input.client.trim() ? (
-              <>Clienta: <span className="font-medium text-cocoa">{sim.input.client}</span></>
-            ) : (
-              'Completa los datos en el formulario y pulsa "Simular".'
-            )}
+            Solo es una simulación: los datos de la clienta se piden recién al aceptar el contrato.
           </div>
         </aside>
       </div>
@@ -467,7 +462,6 @@ export function Simulator() {
                   </h2>
                   <p className="mt-0.5 text-xs text-cocoa-muted">
                     {totalDresses} {totalDresses === 1 ? 'vestido' : 'vestidos'}
-                    {sim.input.client.trim() ? ` · ${sim.input.client}` : ''}
                   </p>
                 </div>
 

@@ -10,7 +10,7 @@ import { apiRequest } from './contractsApi';
 
 const BASE = '/api/core/produccion/';
 
-export type ProdStatus = 'En cola' | 'En producción' | 'Terminado';
+export type ProdStatus = 'Sin iniciar' | 'En proceso' | 'Terminado';
 export type ProdPriority = 'Alta' | 'Media' | 'Baja';
 export type ProdWorkshop = 'Taller A' | 'Taller C' | 'Tienda';
 export type NoteKind = 'observacion' | 'incidencia';
@@ -65,6 +65,8 @@ export interface ProdStep {
   inProgress: boolean;
   workerIds: string[];
   workers: string[];
+  /** Personal que sabe hacer este proceso (solo a ellas se puede asignar). */
+  eligibleWorkerIds: string[];
   completedAt: string | null;
   sessions: ProdSession[];
 }
@@ -97,6 +99,11 @@ export interface ProdPayment {
   method: string;
   concept: string;
   reference: string;
+  notes: string;
+  /** 1 = Primer pago, 2 = Segundo pago… (mismo número que en el contrato). */
+  number: number | null;
+  /** Registrado desde el taller (va ligado a un vestido). */
+  fromWorkshop: boolean;
   dressCode: string | null;
 }
 
@@ -109,6 +116,8 @@ export interface ProdFinance {
   contractBalance: number;
   charges: ProdCharge[];
   payments: ProdPayment[];
+  /** Números de pago ya usados en el contrato. */
+  usedPaymentNumbers: number[];
 }
 
 export interface ProdReminder {
@@ -176,6 +185,7 @@ export interface ProdWorker {
   area: string;
   areas: Record<string, number>;
   skills: string[];
+  skillIds: number[];
 }
 
 interface DressResponse {
@@ -211,7 +221,15 @@ export const productionApi = {
 
   addPayment: (
     id: string,
-    data: { amount: number; method?: PaymentMethod; date?: string; reference?: string; concept?: string }
+    data: {
+      amount: number;
+      method?: PaymentMethod;
+      date?: string;
+      reference?: string;
+      concept?: string;
+      number?: number;
+      notes?: string;
+    }
   ) =>
     apiRequest<DressResponse>(`${BASE}vestidos/${id}/pagos/`, {
       method: 'POST',
@@ -331,3 +349,35 @@ export function prodRisk(d: ProdDress, today = todayISO()): { tone: RiskTone; la
   if (days <= 7 || neededDays > days * 0.8) return { tone: 'risk', label: `Riesgo · ${days} d` };
   return { tone: 'ok', label: `A tiempo · ${days} d` };
 }
+
+// ============================================================
+// PAGOS NUMERADOS (iguales a los del contrato)
+// ============================================================
+
+export const PAYMENT_ORDINALS = [
+  'Primer', 'Segundo', 'Tercer', 'Cuarto', 'Quinto', 'Sexto', 'Séptimo', 'Octavo', 'Noveno', 'Décimo',
+];
+
+export function paymentName(n: number | null | undefined): string {
+  if (!n) return 'Pago';
+  return n <= PAYMENT_ORDINALS.length ? `${PAYMENT_ORDINALS[n - 1]} pago` : `Pago ${n}`;
+}
+
+/** Estado visual del vestido para colorear la lista de la jefa. */
+export type DressTone = 'idle' | 'progress' | 'risk' | 'late' | 'done';
+
+export function dressTone(d: ProdDress, today = todayISO()): DressTone {
+  if (d.status === 'Terminado') return 'done';
+  const risk = prodRisk(d, today);
+  if (risk.tone === 'bad') return 'late';
+  if (risk.tone === 'risk') return 'risk';
+  return d.status === 'Sin iniciar' ? 'idle' : 'progress';
+}
+
+export const TONE_STYLES: Record<DressTone, { label: string; dot: string; chip: string; row: string }> = {
+  idle: { label: 'Sin iniciar', dot: 'bg-slate-400', chip: 'bg-slate-100 text-slate-700', row: 'border-l-slate-300' },
+  progress: { label: 'En proceso', dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700', row: 'border-l-emerald-400' },
+  risk: { label: 'Ojo con la fecha', dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-800', row: 'border-l-amber-400' },
+  late: { label: 'Atrasado', dot: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700', row: 'border-l-rose-500' },
+  done: { label: 'Terminado', dot: 'bg-sky-500', chip: 'bg-sky-50 text-sky-700', row: 'border-l-sky-400' },
+};

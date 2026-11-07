@@ -4,11 +4,14 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { MenuIcon, XIcon } from 'lucide-react';
 import { Role } from '../../types';
 import { Sidebar } from './Sidebar';
+import { NotificationBell } from '../notifications/NotificationBell';
+import { NotificationsProvider } from '../../contexts/NotificationsContext';
 
 export function AppShell({ role }: {role: Role;}) {
   const [open, setOpen] = useState(false);
 
   return (
+    <NotificationsProvider>
     <div className="flex min-h-screen w-full bg-ivory text-cocoa">
       <aside className="hidden w-64 shrink-0 border-r border-line bg-cream/60 lg:block">
         <div className="sticky top-0 h-screen overflow-y-auto">
@@ -19,13 +22,22 @@ export function AppShell({ role }: {role: Role;}) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-line bg-cream/60 px-5 py-3 lg:hidden">
           <span className="font-display text-2xl font-semibold">Fiancée</span>
-          <button type="button" onClick={() => setOpen(true)} aria-label="Abrir menú" className="rounded-lg p-2 hover:bg-paper">
-            <MenuIcon className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <NotificationBell role={role} />
+            <button type="button" onClick={() => setOpen(true)} aria-label="Abrir menú" className="rounded-lg p-2 hover:bg-paper">
+              <MenuIcon className="h-5 w-5" />
+            </button>
+          </div>
         </header>
 
+        <div className="pointer-events-none sticky top-0 z-30 hidden justify-end px-10 pt-5 lg:flex">
+          <div className="pointer-events-auto">
+            <NotificationBell role={role} />
+          </div>
+        </div>
+
         <main className="min-w-0 flex-1">
-          <div className="mx-auto w-full max-w-[1360px] px-5 py-8 md:px-8 lg:px-10 lg:py-10">
+          <div className="mx-auto w-full max-w-[1360px] px-5 py-8 md:px-8 lg:-mt-12 lg:px-10 lg:py-10">
             <Outlet />
           </div>
         </main>
@@ -57,6 +69,7 @@ export function AppShell({ role }: {role: Role;}) {
           </>
         }
       </AnimatePresence>
-    </div>);
+    </div>
+    </NotificationsProvider>);
 
 }

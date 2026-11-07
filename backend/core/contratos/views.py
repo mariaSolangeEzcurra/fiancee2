@@ -25,14 +25,14 @@ from .serializers import (
     ContratoSerializer,
 )
 
-ROLES_EDICION = ("comercial", "gerencia")
-ROLES_LECTURA = ROLES_EDICION + ("jefa_taller",)
+ROLES_EDICION = ("comercial",)
+ROLES_LECTURA = ROLES_EDICION + ("gerencia", "jefa_taller")
 
 
 class PermisoContratos(IsAuthenticated):
     """
     Lectura: comercial, gerencia y jefa de taller.
-    Creación y edición: comercial y gerencia.
+    Creación y edición: solo comercial (gerencia solo consulta).
     """
 
     def has_permission(self, request, view):

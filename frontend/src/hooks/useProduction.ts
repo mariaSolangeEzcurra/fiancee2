@@ -4,7 +4,6 @@ import { toast } from 'sonner';
 import { productionApi } from '../services/productionApi';
 import type {
   NoteKind,
-  PaymentMethod,
   ProdDress,
   ProdOperation,
   ProdPriority,
@@ -107,7 +106,7 @@ export function useProduction() {
     removeStep: (id: string, index: number) => run(id, () => productionApi.removeStep(id, index)),
     addPayment: (
       id: string,
-      data: { amount: number; method?: PaymentMethod; date?: string; reference?: string; concept?: string }
+      data: Parameters<typeof productionApi.addPayment>[1]
     ) => run(id, () => productionApi.addPayment(id, data)),
     addCharge: (id: string, data: { concept: string; amount: number; description?: string }) =>
       run(id, () => productionApi.addCharge(id, data)),

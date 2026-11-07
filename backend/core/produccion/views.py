@@ -32,7 +32,13 @@ from core.models import (
     Trabajadora,
     VestidoContrato,
 )
+from core.services.jornada import cerrar_jornadas_vencidas
+from core.services.notificaciones import sincronizar_avisos_taller
 from core.services.produccion import (
+    ORDINALES_PAGO,
+    elegibles_por_operacion,
+    operacion_del_paso,
+    siguiente_numero_pago,
     agregar_cargo,
     agregar_nota,
     agregar_paso,
@@ -48,7 +54,7 @@ from core.services.produccion import (
     registrar_pago,
 )
 
-ROLES_LECTURA = ("jefa_taller", "gerencia")
+ROLES_LECTURA = ("jefa_taller", "gerencia", "comercial")
 ROLES_EDICION = ("jefa_taller",)
 
 TALLER_NOMBRE = {"A": "Taller A", "C": "Taller C", "T": "Tienda"}
@@ -89,8 +95,8 @@ def estado_frontend(vestido, pasos):
     if vestido.estado == VestidoContrato.Estado.FINALIZADO:
         return "Terminado"
     if all(p.estado == PasoVestido.Estado.PENDIENTE for p in pasos) and not vestido.sesiones_trabajo.all():
-        return "En cola"
-    return "En producción"
+        return "Sin iniciar"
+    return "En proceso"
 
 
 ESTADO_SESION = {
@@ -139,7 +145,8 @@ def _usuario(u):
     return (u.get_full_name() or u.username) if u else None
 
 
-def serializar_vestido(vestido, request=None):
+def serializar_vestido(vestido, request=None, elegibles=None):
+    elegibles = elegibles if elegibles is not None else elegibles_por_operacion()
     contrato = vestido.contrato
     cliente = contrato.cliente
     pasos = sorted(vestido.pasos.all(), key=lambda p: p.orden)
@@ -193,6 +200,12 @@ def serializar_vestido(vestido, request=None):
             # Tiempo real desde que la jefa lo inició (horas de reloj).
             "elapsedHours": round(duracion, 2) if duracion is not None else None,
             "workerIds": [str(t.id) for t in trabajadoras],
+            # Solo quienes tienen la habilidad de este proceso.
+            "eligibleWorkerIds": [
+                str(i) for i in sorted(
+                    elegibles.get(operacion_del_paso(paso).id, set()) if operacion_del_paso(paso) else set()
+                )
+            ],
             "workers": [t.nombre for t in trabajadoras],
             "sessions": [x for x in registro if x["stepIndex"] == indice],
         })
@@ -236,11 +249,14 @@ def serializar_vestido(vestido, request=None):
         "payments": [
             {
                 "id": p.id, "amount": float(p.importe), "date": p.fecha, "method": p.get_metodo_display(),
-                "concept": p.concepto, "reference": p.referencia,
+                "concept": p.concepto, "reference": p.referencia, "notes": p.observaciones,
+                "number": p.orden_adelanto,
                 "dressCode": p.vestido.codigo if p.vestido_id else None,
+                "fromWorkshop": bool(p.vestido_id),
             }
-            for p in sorted(pagos_contrato, key=lambda p: (p.fecha, p.id), reverse=True)
+            for p in sorted(pagos_contrato, key=lambda p: (p.orden_adelanto or 999, p.fecha, p.id))
         ],
+        "usedPaymentNumbers": sorted(p.orden_adelanto for p in pagos_contrato if p.orden_adelanto),
     }
 
     return {
@@ -302,6 +318,9 @@ def vestidos_queryset():
     )
 
 
+PRIORIDAD_ORDEN = {"ALTA": 0, "MEDIA": 1, "BAJA": 2}
+
+
 def respuesta(request, vestido, mensaje=None, codigo=status.HTTP_200_OK):
     vestido = vestidos_queryset().get(pk=vestido.pk)
     data = {"dress": serializar_vestido(vestido, request)}
@@ -336,6 +355,8 @@ class VestidosProduccionView(APIView):
 
     @extend_schema(operation_id="produccion_vestidos", tags=["produccion"], responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
+        cerrar_jornadas_vencidas()
+        sincronizar_avisos_taller()
         for vestido in VestidoContrato.objects.filter(ruta__isnull=False, pasos__isnull=True):
             asegurar_pasos(vestido)
 
@@ -348,10 +369,18 @@ class VestidosProduccionView(APIView):
         if estado := params.get("estado"):
             vestidos = vestidos.filter(estado=estado)
 
-        return Response([
-            serializar_vestido(v, request)
-            for v in vestidos.order_by("contrato__fecha_entrega", "codigo")
-        ])
+        elegibles = elegibles_por_operacion()
+        # Primero lo urgente: prioridad alta y fecha límite más cercana.
+        vestidos = sorted(
+            vestidos,
+            key=lambda v: (
+                v.estado == VestidoContrato.Estado.FINALIZADO,
+                PRIORIDAD_ORDEN.get(v.prioridad, 1),
+                v.fecha_limite_efectiva,
+                v.codigo,
+            ),
+        )
+        return Response([serializar_vestido(v, request, elegibles) for v in vestidos])
 
 
 class RecordatoriosView(APIView):
@@ -561,7 +590,10 @@ class PagosVestidoView(APIView):
         method = serializers.ChoiceField(choices=Pago.Metodo.choices, required=False)
         date = serializers.DateField(required=False)
         reference = serializers.CharField(required=False, allow_blank=True, max_length=100)
-        concept = serializers.CharField(required=False, allow_blank=True, max_length=200)
+        concept = serializers.CharField(required=False, allow_blank=True, max_length=150)
+        # 1 = primer pago, 2 = segundo pago… (vacío = otro pago)
+        number = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=20)
+        notes = serializers.CharField(required=False, allow_blank=True)
 
     @extend_schema(operation_id="produccion_pago", tags=["produccion"], request=Entrada, responses={201: OpenApiTypes.OBJECT})
     def post(self, request, pk):
@@ -573,9 +605,9 @@ class PagosVestidoView(APIView):
             request, vestido,
             lambda: registrar_pago(
                 vestido, d["amount"], request.user, d.get("method"), d.get("date"),
-                d.get("reference", ""), d.get("concept", ""),
+                d.get("reference", ""), d.get("concept", ""), d.get("number"), d.get("notes", ""),
             ),
-            lambda p: f"Pago de S/ {p.importe} registrado.",
+            lambda p: f"{p.concepto} de S/ {p.importe} registrado.",
             status.HTTP_201_CREATED,
         )
 
@@ -672,5 +704,6 @@ class TrabajadorasProduccionView(APIView):
                 "area": t.area,
                 "areas": areas,
                 "skills": [op.nombre for op in t.habilidades.all()],
+                "skillIds": [op.id for op in t.habilidades.all()],
             })
         return Response(datos)

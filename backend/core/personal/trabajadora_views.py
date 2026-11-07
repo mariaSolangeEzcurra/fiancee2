@@ -26,7 +26,14 @@ from core.models import (
 )
 
 
+from core.services.jornada import (  # noqa: E402
+    cerrar_jornadas_vencidas,
+    cerrar_sesiones_abiertas,
+    horas_programadas,
+)
 from core.services.produccion import (  # noqa: E402
+    elegibles_por_operacion,
+    puede_hacer,
     asegurar_pasos,
     iniciar_paso,
     paso_actual,
@@ -97,6 +104,9 @@ def serializar_asistencia(asistencia):
         ),
         "observaciones_entrada": asistencia.observaciones_entrada,
         "observaciones_salida": asistencia.observaciones_salida,
+        "cierre_automatico": asistencia.cierre_automatico,
+        "horas_extra": asistencia.horas_extra,
+        "motivo_horas_extra": asistencia.motivo_horas_extra,
     }
 
 
@@ -176,11 +186,15 @@ class MiPanelTallerView(APIView):
 
     def get(self, request):
         trabajadora = obtener_trabajadora(request)
+        cerrar_jornadas_vencidas(trabajadora)
         hoy = timezone.localdate()
 
         asistencia = RegistroAsistencia.objects.filter(
             trabajadora=trabajadora,
             fecha=hoy,
+        ).first()
+        ultima_automatica = RegistroAsistencia.objects.filter(
+            trabajadora=trabajadora, cierre_automatico=True, fecha__lt=hoy,
         ).first()
 
         sesion_activa = SesionTrabajo.objects.filter(
@@ -196,6 +210,9 @@ class MiPanelTallerView(APIView):
             },
             "fecha": hoy,
             "asistencia": serializar_asistencia(asistencia),
+            # Última jornada que se cerró sola (para anotar horas extra).
+            "ultima_jornada_automatica": serializar_asistencia(ultima_automatica),
+            "horas_programadas_hoy": horas_programadas(trabajadora, hoy),
             "sesion_activa": (
                 {
                     "id": sesion_activa.id,
@@ -230,6 +247,7 @@ class IniciarJornadaView(APIView):
     @transaction.atomic
     def post(self, request):
         trabajadora = obtener_trabajadora(request)
+        cerrar_jornadas_vencidas(trabajadora)
         hoy = timezone.localdate()
 
         asistencia = RegistroAsistencia.objects.filter(
@@ -315,46 +333,56 @@ class FinalizarJornadaView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-            tiene_sesion_activa = SesionTrabajo.objects.filter(
-                reserva__trabajadora=trabajadora,
-                fin__isnull=True,
-            ).exists()
+        ahora = timezone.now()
+        # Lo que quedó abierto se cierra a la hora de salida.
+        cerrar_sesiones_abiertas(trabajadora, ahora, "Cerrada al terminar la jornada.")
 
-            tiene_sesion_vestido_abierta = SesionVestido.objects.filter(
-                trabajadora=trabajadora,
-                estado__in=[
-                    SesionVestido.Estado.EN_CURSO,
-                    SesionVestido.Estado.PAUSADA,
-                ],
-            ).exists()
-
-            if tiene_sesion_activa or tiene_sesion_vestido_abierta:
-                return Response(
-                    {
-                        "detail": (
-                            "Antes de finalizar tu jornada, debes finalizar "
-                            "todas las sesiones de trabajo abiertas."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        asistencia.salida = timezone.now()
-        asistencia.observaciones_salida = request.data.get(
-            "observaciones", ""
-        )
-        asistencia.save(
-            update_fields=[
-                "salida",
-                "observaciones_salida",
-                "actualizado_en",
-            ]
-        )
+        asistencia.salida = ahora
+        asistencia.observaciones_salida = request.data.get("observaciones", "") or ""
+        campos = ["salida", "observaciones_salida", "actualizado_en"]
+        try:
+            extra = Decimal(str(request.data.get("horas_extra") or "0"))
+        except Exception:
+            extra = Decimal("0")
+        if extra > 0:
+            asistencia.horas_extra = extra.quantize(Decimal("0.01"))
+            asistencia.motivo_horas_extra = (request.data.get("motivo_horas_extra") or "")[:250]
+            campos += ["horas_extra", "motivo_horas_extra"]
+        asistencia.save(update_fields=campos)
 
         return Response({
             "detail": "Jornada finalizada correctamente.",
             "asistencia": serializar_asistencia(asistencia),
         })
+
+
+class MisHorasExtraView(APIView):
+    """
+    POST /api/taller/horas-extra/  {fecha?, horas, motivo}
+    Anota horas extra en una jornada ya cerrada (por defecto la última).
+    """
+
+    permission_classes = [EsPersonalTaller]
+
+    @extend_schema(operation_id="taller_horas_extra", request=OpenApiTypes.OBJECT, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        trabajadora = obtener_trabajadora(request)
+        registros = RegistroAsistencia.objects.filter(trabajadora=trabajadora, salida__isnull=False)
+        if request.data.get("fecha"):
+            registros = registros.filter(fecha=request.data["fecha"])
+        registro = registros.first()
+        if registro is None:
+            return Response({"detail": "No hay una jornada cerrada para esa fecha."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            horas = Decimal(str(request.data.get("horas") or "0")).quantize(Decimal("0.01"))
+        except Exception:
+            return Response({"detail": "Indica las horas extra."}, status=status.HTTP_400_BAD_REQUEST)
+        if horas < 0 or horas > 12:
+            return Response({"detail": "Las horas extra deben estar entre 0 y 12."}, status=status.HTTP_400_BAD_REQUEST)
+        registro.horas_extra = horas
+        registro.motivo_horas_extra = (request.data.get("motivo") or "")[:250]
+        registro.save(update_fields=["horas_extra", "motivo_horas_extra", "actualizado_en"])
+        return Response({"detail": "Horas extra guardadas.", "asistencia": serializar_asistencia(registro)})
 
 
 class MisTrabajosView(APIView):
@@ -958,7 +986,9 @@ class VestidosDisponiblesView(APIView):
 
     def get(self, request):
         trabajadora = obtener_trabajadora(request)
+        cerrar_jornadas_vencidas(trabajadora)
         mis_operaciones = set(trabajadora.habilidades.values_list("id", flat=True))
+        elegibles = elegibles_por_operacion()
 
         vestidos = VestidoContrato.objects.filter(
             estado__in=[
@@ -998,6 +1028,10 @@ class VestidosDisponiblesView(APIView):
             # trabajar en un proceso que la jefa ya inició.
             if paso is None or paso.es_entrega or paso.estado != "EN_CURSO":
                 continue
+            asignada = paso.trabajadoras.filter(pk=trabajadora.pk).exists()
+            # Solo los procesos que ella sabe hacer (o si la asignaron).
+            if not asignada and not puede_hacer(trabajadora, paso, elegibles):
+                continue
 
             resultado.append({
                 "id": vestido.id,
@@ -1025,7 +1059,7 @@ class VestidosDisponiblesView(APIView):
                     paso.plantilla is not None
                     and paso.plantilla.operacion_id in mis_operaciones
                 ),
-                "asignada_a_mi": paso.trabajadoras.filter(pk=trabajadora.pk).exists(),
+                "asignada_a_mi": asignada,
                 "proceso_iniciado_en": paso.iniciado_en,
                 # Observaciones, fotos y cambios pedidos (visibles para todas).
                 "observaciones": notas_para_taller(vestido, request),
@@ -1121,6 +1155,11 @@ class IniciarSesionVestidoView(APIView):
         if paso.estado != "EN_CURSO":
             return Response(
                 {"detail": f"La jefa de taller aún no inició el proceso «{paso.nombre}»."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not paso.trabajadoras.filter(pk=trabajadora.pk).exists() and not puede_hacer(trabajadora, paso):
+            return Response(
+                {"detail": f"«{paso.nombre}» no está entre tus habilidades. Pide a la jefa que te asigne."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

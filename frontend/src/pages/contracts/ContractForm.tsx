@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ArrowLeftIcon,
+  ArrowRightIcon,
   BanIcon,
   CalendarRangeIcon,
   CheckIcon,
@@ -78,7 +79,21 @@ interface AdelantoDraft {
   fecha: string;
   metodo: MetodoPago;
   referencia: string;
+  concepto: string;
+  observaciones: string;
+  /** Lo registró la jefa de taller (desde el vestido). */
+  desdeTaller: boolean;
 }
+
+const NOMBRES_PAGO = ['Primer pago', 'Segundo pago', 'Tercer pago'];
+
+const PASOS = [
+  { id: 'clienta', label: 'Clienta' },
+  { id: 'evento', label: 'Evento y fechas' },
+  { id: 'vestidos', label: 'Vestidos' },
+  { id: 'pagos', label: 'Pagos' },
+  { id: 'revisar', label: 'Revisar y guardar' },
+] as const;
 
 interface FormState {
   numero: string;
@@ -135,7 +150,7 @@ function emptyItem(): ItemDraft {
 }
 
 function emptyAdelanto(): AdelantoDraft {
-  return { importe: '', fecha: '', metodo: 'EFECTIVO', referencia: '' };
+  return { importe: '', fecha: '', metodo: 'EFECTIVO', referencia: '', concepto: '', observaciones: '', desdeTaller: false };
 }
 
 function emptyForm(): FormState {
@@ -168,9 +183,18 @@ function emptyForm(): FormState {
 
 function formFromContract(c: Contrato): FormState {
   const adelantos = [1, 2, 3].map((orden) => {
-    const a = c.adelantos.find((x) => x.orden_adelanto === orden);
+    // Mismo número de pago en contrato y taller ("Segundo pago" = 2).
+    const a = (c.pagos ?? c.adelantos).find((x) => x.orden_adelanto === orden);
     return a
-      ? { importe: a.importe, fecha: a.fecha, metodo: a.metodo, referencia: a.referencia }
+      ? {
+          importe: a.importe,
+          fecha: a.fecha,
+          metodo: a.metodo,
+          referencia: a.referencia,
+          concepto: a.concepto && a.concepto !== NOMBRES_PAGO[orden - 1] ? a.concepto : '',
+          observaciones: a.observaciones ?? '',
+          desdeTaller: 'vestido' in a && Boolean((a as { vestido?: number | null }).vestido),
+        }
       : emptyAdelanto();
   });
 
@@ -259,8 +283,22 @@ function isLocked(item: ItemDraft): boolean {
   return Boolean(item.id && item.estado && item.estado !== 'PENDIENTE');
 }
 
+/** Validación por paso del formulario (0 = clienta … 4 = revisar). */
+function validateStep(form: FormState, step: number): string | null {
+  const steps = [validateClienta, validateEvento, validateVestidos];
+  return steps[step]?.(form) ?? null;
+}
+
 function validate(form: FormState): string | null {
+  return validateClienta(form) ?? validateEvento(form) ?? validateVestidos(form);
+}
+
+function validateClienta(form: FormState): string | null {
   if (!form.cliente.nombre.trim()) return 'Ingresa el nombre de la clienta.';
+  return null;
+}
+
+function validateEvento(form: FormState): string | null {
   if (!form.fecha_entrega) return 'Ingresa la fecha de recojo del vestido.';
   if (form.fecha_evento && form.fecha_entrega > form.fecha_evento) {
     return 'La fecha de recojo no puede ser posterior a la fecha del evento.';
@@ -278,6 +316,10 @@ function validate(form: FormState): string | null {
   if (form.tipo_evento === 'OTRO' && !form.tipo_evento_detalle.trim()) {
     return 'Indica el tipo de evento.';
   }
+  return null;
+}
+
+function validateVestidos(form: FormState): string | null {
   if (form.vestidos.length === 0) return 'Agrega al menos un vestido o ítem.';
 
   for (const [i, item] of form.vestidos.entries()) {
@@ -348,11 +390,13 @@ function buildPayload(form: FormState): ContratoInput {
           }
         : {}),
     })),
-    adelantos: form.adelantos.map((a) => ({
+    adelantos: form.adelantos.map((a, i) => ({
       importe: num(a.importe).toFixed(2),
       fecha: orNull(a.fecha),
       metodo: a.metodo,
       referencia: a.referencia.trim(),
+      concepto: a.concepto.trim() || NOMBRES_PAGO[i],
+      observaciones: a.observaciones.trim(),
     })),
   };
 }
@@ -422,6 +466,8 @@ interface ContractFormProps {
   prefill?: ContractPrefill | null;
   onBack: () => void;
   onSaved: (contrato: Contrato) => void;
+  /** Solo consulta (gerencia): no se puede crear ni modificar. */
+  viewOnly?: boolean;
 }
 
 type PlanModalState = {
@@ -432,7 +478,7 @@ type PlanModalState = {
   plan: PlanVestido[];
 };
 
-export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractFormProps) {
+export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = false }: ContractFormProps) {
   const isEdit = contractId !== null;
 
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -441,6 +487,8 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [step, setStep] = useState(0);
+  const ultimoPaso = PASOS.length - 1;
   const [planModal, setPlanModal] = useState<PlanModalState>({
     open: false, mode: 'preview', loading: false, error: null, plan: [],
   });
@@ -509,9 +557,8 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
 
   // Cobros extra y pagos que registró la jefa de taller.
   const extras = num(original?.total_cargos ?? '0');
-  const otrosPagos = (original?.pagos ?? [])
-    .filter((p) => !p.orden_adelanto)
-    .reduce((s, p) => s + num(p.importe), 0);
+  const pagosFuera = (original?.pagos ?? []).filter((p) => !p.orden_adelanto || p.orden_adelanto > 3);
+  const otrosPagos = pagosFuera.reduce((s, p) => s + num(p.importe), 0);
   const total = form.vestidos.reduce((s, v) => s + num(v.precio) + num(v.precio_otros), 0) + extras;
   const pagado = form.adelantos.reduce((s, a) => s + num(a.importe), 0) + otrosPagos;
   const saldo = total - pagado;
@@ -525,7 +572,7 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
         servicio_confeccion: enTaller > 0,
       };
 
-  const readOnly = isEdit && original !== null && ['CANCELADO', 'ENTREGADO'].includes(original.estado);
+  const readOnly = viewOnly || (isEdit && original !== null && ['CANCELADO', 'ENTREGADO'].includes(original.estado));
 
   // ---------------- edición ----------------
 
@@ -630,6 +677,8 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
   const checkForm = (): ContratoInput | null => {
     const error = validate(form);
     if (error) {
+      const paso = [0, 1, 2].find((i) => validateStep(form, i));
+      if (paso !== undefined) setStep(paso);
       toast.error(error);
       return null;
     }
@@ -727,6 +776,22 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
     }
   };
 
+  // ---------------- pasos ----------------
+
+  const irA = (destino: number) => {
+    // Al avanzar se revisa cada paso; retroceder siempre se puede.
+    for (let i = step; i < destino; i += 1) {
+      const error = validateStep(form, i);
+      if (error) {
+        setStep(i);
+        toast.error(error);
+        return;
+      }
+    }
+    setStep(destino);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   // ---------------- render ----------------
 
   if (loading) {
@@ -775,9 +840,9 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
             <ArrowLeftIcon className="h-4 w-4" /> Contratos
           </button>
 
-          <button type="button" onClick={addItem} disabled={readOnly || busy} className="inline-flex items-center gap-2 rounded-xl border border-gold-soft bg-paper px-4 py-3 text-sm font-semibold text-cocoa hover:bg-champagne-soft disabled:cursor-not-allowed disabled:opacity-50">
+          {!readOnly && <button type="button" onClick={addItem} disabled={readOnly || busy} className="inline-flex items-center gap-2 rounded-xl border border-gold-soft bg-paper px-4 py-3 text-sm font-semibold text-cocoa hover:bg-champagne-soft disabled:cursor-not-allowed disabled:opacity-50">
             <PlusIcon className="h-4 w-4" /> Agregar vestido
-          </button>
+          </button>}
 
           <button type="button" onClick={() => void handlePreview()} disabled={busy} className="inline-flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm font-semibold text-cocoa hover:bg-cream disabled:cursor-not-allowed disabled:opacity-50">
             <CalendarRangeIcon className="h-4 w-4" />
@@ -790,19 +855,53 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
             </button>
           )}
 
-          <button type="button" onClick={() => void handleSave()} disabled={readOnly || busy} className="inline-flex items-center gap-2 rounded-xl bg-cocoa px-4 py-3 text-sm font-semibold text-white hover:bg-[#3a281f] disabled:cursor-not-allowed disabled:opacity-50">
-            {saving ? <RefreshCwIcon className="h-4 w-4 animate-spin" /> : <SaveIcon className="h-4 w-4" />}
-            {saving ? 'Guardando…' : isEdit ? 'Guardar cambios' : 'Guardar contrato'}
-          </button>
+          {!readOnly && (isEdit || step === ultimoPaso) && (
+            <button type="button" onClick={() => void handleSave()} disabled={readOnly || busy} className="inline-flex items-center gap-2 rounded-xl bg-cocoa px-4 py-3 text-sm font-semibold text-white hover:bg-[#3a281f] disabled:cursor-not-allowed disabled:opacity-50">
+              {saving ? <RefreshCwIcon className="h-4 w-4 animate-spin" /> : <SaveIcon className="h-4 w-4" />}
+              {saving ? 'Guardando…' : isEdit ? 'Guardar cambios' : 'Guardar contrato'}
+            </button>
+          )}
 
           <div className="ml-auto text-right">
             <p className="text-xs text-cocoa-muted">Monto total</p>
             <p className="text-lg font-semibold text-cocoa">{money.format(total)}</p>
           </div>
         </div>
+
+        <ol className="mt-3 flex gap-1 overflow-x-auto border-t border-line pt-3" aria-label="Pasos del contrato">
+          {PASOS.map((p, i) => {
+            const activo = i === step;
+            const hecho = i < step || (isEdit && !activo);
+            return (
+              <li key={p.id} className="flex-1">
+                <button
+                  type="button"
+                  onClick={() => (i <= step || isEdit ? setStep(i) : irA(i))}
+                  aria-current={activo ? 'step' : undefined}
+                  className={`flex w-full items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-left text-sm transition ${
+                    activo ? 'bg-cocoa text-white' : 'text-cocoa-muted hover:bg-cream'
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                      activo ? 'bg-white/20 text-white' : hecho ? 'bg-champagne-soft text-cocoa' : 'border border-line'
+                    }`}
+                  >
+                    {hecho && !activo ? <CheckIcon className="h-3.5 w-3.5" /> : i + 1}
+                  </span>
+                  <span className={activo ? 'font-semibold' : ''}>{readOnly && p.id === 'revisar' ? 'Otros datos' : p.label}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
       </section>
 
-      {readOnly && (
+      {viewOnly ? (
+        <p className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+          Solo lectura: puedes revisar todo el contrato, pero los cambios los hace el área comercial.
+        </p>
+      ) : readOnly && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           Este contrato está {original?.estado_display.toLowerCase()} y solo se puede consultar.
         </p>
@@ -811,6 +910,7 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,7fr)_minmax(280px,4fr)]">
         <fieldset disabled={readOnly} className="min-w-0 space-y-6">
           {/* 1. Clienta */}
+          {step === 0 && (
           <Card
             title="Datos de la clienta"
             subtitle="Si la novia no está registrada se crea automáticamente al guardar. Si el DNI ya existe, se usa su ficha."
@@ -868,8 +968,10 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
               </Field>
             </div>
           </Card>
+          )}
 
           {/* 2. Objeto del contrato */}
+          {step === 1 && (
           <Card title="I. Objeto del contrato" subtitle={form.serviciosManuales ? undefined : 'Los servicios se marcan solos según los vestidos; puedes cambiarlos.'}>
             <div className="flex flex-wrap gap-2">
               <Check label="Alquiler" checked={servicios.servicio_alquiler} onChange={(v) => setServicio('servicio_alquiler', v)} />
@@ -914,8 +1016,10 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
               </Field>
             </div>
           </Card>
+          )}
 
           {/* 3. Vestidos */}
+          {step === 2 && (
           <Card
             title="Vestidos e ítems"
             subtitle="Cada vestido con taller reserva horas automáticamente. Usa «Vestido en tienda» para vestidos de stock que solo se modifican, y «Sin taller» para accesorios."
@@ -1078,13 +1182,21 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
               </button>
             </div>
           </Card>
+          )}
 
-          {/* 4. Montos */}
-          <Card title="Monto, adelantos y garantía" subtitle="Los adelantos se registran como pagos confirmados del contrato.">
+          {/* 4. Pagos */}
+          {step === 3 && (
+          <Card title="Pagos y garantía" subtitle="Son los mismos pagos que ve el taller: si la jefa registra el «Segundo pago», aparece aquí.">
             <div className="space-y-3">
               {form.adelantos.map((a, i) => (
-                <div key={i} className="grid gap-3 sm:grid-cols-4">
-                  <Field label={['Primer adelanto', 'Segundo adelanto', 'Tercer adelanto'][i]}>
+                <div key={i} className={`grid gap-3 rounded-xl border p-3 sm:grid-cols-4 ${a.desdeTaller ? 'border-gold-soft bg-champagne-soft/30' : 'border-line bg-cream/30'}`}>
+                  <p className="flex items-center gap-2 text-sm font-semibold text-cocoa sm:col-span-4">
+                    {a.concepto || NOMBRES_PAGO[i]}
+                    {a.desdeTaller && (
+                      <span className="rounded-full bg-paper px-2 py-0.5 text-[11px] font-medium text-cocoa-muted">registrado en taller</span>
+                    )}
+                  </p>
+                  <Field label="Monto (S/)">
                     <input type="number" min="0" step="0.01" className={inputCls} value={a.importe} onChange={(e) => setAdelanto(i, { importe: e.target.value })} placeholder="0.00" />
                   </Field>
                   <Field label="Fecha">
@@ -1100,9 +1212,33 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
                   <Field label="N.º operación">
                     <input className={inputCls} value={a.referencia} onChange={(e) => setAdelanto(i, { referencia: e.target.value })} />
                   </Field>
+                  <Field label="Nombre (opcional)">
+                    <input className={inputCls} value={a.concepto} onChange={(e) => setAdelanto(i, { concepto: e.target.value })} placeholder={NOMBRES_PAGO[i]} />
+                  </Field>
+                  <Field label="Observación" className="sm:col-span-3">
+                    <input className={inputCls} value={a.observaciones} onChange={(e) => setAdelanto(i, { observaciones: e.target.value })} placeholder="Ej.: pagó la mamá de la novia" />
+                  </Field>
                 </div>
               ))}
             </div>
+
+            {pagosFuera.length > 0 && (
+              <div className="mt-5 border-t border-line pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cocoa-muted">Otros pagos registrados en taller</p>
+                <ul className="mt-2 divide-y divide-line rounded-xl border border-line">
+                  {pagosFuera.map((p) => (
+                    <li key={p.id} className="flex items-start justify-between gap-3 px-3 py-2 text-sm">
+                      <div className="min-w-0">
+                        <p className="text-cocoa">{p.concepto || 'Pago'}{p.vestido_codigo ? ` · ${p.vestido_codigo}` : ''}</p>
+                        <p className="text-xs text-cocoa-muted">{fmtShort(p.fecha)} · {METODOS_PAGO.find((m) => m.value === p.metodo)?.label ?? p.metodo}{p.referencia ? ` · ${p.referencia}` : ''}</p>
+                        {p.observaciones && <p className="text-xs italic text-cocoa-muted">{p.observaciones}</p>}
+                      </div>
+                      <span className="whitespace-nowrap font-semibold text-cocoa">{money.format(num(p.importe))}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="mt-5 grid gap-4 border-t border-line pt-5 sm:grid-cols-3">
               <Field label="Garantía (S/)">
@@ -1113,8 +1249,10 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
               </Field>
             </div>
           </Card>
+          )}
 
-          {/* 5. Otros */}
+          {/* 5. Revisar */}
+          {step === 4 && (
           <Card title="Otros datos">
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="N.º de contrato" hint={isEdit ? 'Si lo cambias, se renombran los códigos de los vestidos.' : 'Vacío = se genera automáticamente.'}>
@@ -1138,6 +1276,40 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
               </Field>
             </div>
           </Card>
+          )}
+
+          {/* Navegación entre pasos */}
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => (step === 0 ? onBack() : setStep(step - 1))}
+              className="inline-flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm font-semibold text-cocoa hover:bg-cream"
+            >
+              <ArrowLeftIcon className="h-4 w-4" /> {step === 0 ? 'Volver a contratos' : 'Atrás'}
+            </button>
+            <span className="text-xs text-cocoa-muted">Paso {step + 1} de {PASOS.length}</span>
+            {readOnly && step === ultimoPaso ? (
+              <span />
+            ) : step < ultimoPaso ? (
+              <button
+                type="button"
+                onClick={() => irA(step + 1)}
+                className="inline-flex items-center gap-2 rounded-xl bg-cocoa px-5 py-3 text-sm font-semibold text-white hover:bg-[#3a281f]"
+              >
+                Siguiente: {readOnly && PASOS[step + 1].id === 'revisar' ? 'Otros datos' : PASOS[step + 1].label} <ArrowRightIcon className="h-4 w-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={readOnly || busy}
+                className="inline-flex items-center gap-2 rounded-xl bg-cocoa px-5 py-3 text-sm font-semibold text-white hover:bg-[#3a281f] disabled:opacity-50"
+              >
+                {saving ? <RefreshCwIcon className="h-4 w-4 animate-spin" /> : <SaveIcon className="h-4 w-4" />}
+                {saving ? 'Guardando…' : isEdit ? 'Guardar cambios' : 'Guardar contrato'}
+              </button>
+            )}
+          </div>
         </fieldset>
 
         {/* Resumen */}
@@ -1160,9 +1332,14 @@ export function ContractForm({ contractId, prefill, onBack, onSaved }: ContractF
             <div className="mt-4 space-y-2 border-t border-line pt-4 text-sm">
               {extras > 0 && <Row label="Cobros extra (taller)" value={money.format(extras)} />}
               <Row label="Monto total" value={money.format(total)} strong />
-              <Row label="Adelantos" value={money.format(pagado - otrosPagos)} />
-              {otrosPagos > 0 && <Row label="Pagos recibidos en taller" value={money.format(otrosPagos)} />}
-              <Row label="Saldo" value={money.format(saldo)} strong />
+              {form.adelantos.map((a, i) =>
+                num(a.importe) > 0 ? (
+                  <Row key={i} label={a.concepto || NOMBRES_PAGO[i]} value={money.format(num(a.importe))} />
+                ) : null
+              )}
+              {otrosPagos > 0 && <Row label="Otros pagos (taller)" value={money.format(otrosPagos)} />}
+              <Row label="Pagado" value={money.format(pagado)} />
+              <Row label="Saldo por cobrar" value={money.format(saldo)} strong />
               {num(form.garantia) > 0 && <Row label="Garantía" value={money.format(num(form.garantia))} />}
             </div>
 

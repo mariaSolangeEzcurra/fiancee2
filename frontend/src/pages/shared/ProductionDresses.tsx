@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { BellRingIcon, RefreshCwIcon, SearchIcon } from 'lucide-react';
 
 import { ProductionDressDrawer } from '../../components/production/ProductionDressDrawer';
@@ -7,11 +8,11 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { Segmented } from '../../components/ui/Segmented';
 import { Stat } from '../../components/ui/Stat';
 import { useProduction } from '../../hooks/useProduction';
-import { prodRisk, prodTotals } from '../../services/productionApi';
+import { dressTone, prodTotals, TONE_STYLES } from '../../services/productionApi';
 import { cn, fmtH, inputClass } from '../../utils/format';
 
 type WorkshopFilter = 'todos' | 'Taller A' | 'Taller C' | 'Tienda';
-type StatusFilter = 'activos' | 'En cola' | 'En producción' | 'riesgo' | 'Terminado';
+type StatusFilter = 'pendientes' | 'sin_iniciar' | 'en_proceso' | 'atrasados' | 'terminados' | 'todos';
 
 const PRIORITY_ORDER = { Alta: 0, Media: 1, Baja: 2 } as const;
 
@@ -19,14 +20,26 @@ const PRIORITY_ORDER = { Alta: 0, Media: 1, Baja: 2 } as const;
  * Vestidos de los contratos en producción (datos reales de Django).
  * Jefa de taller: /taller/vestidos · Gerencia: /gerencia/produccion (readOnly)
  */
-export function ProductionDresses({ readOnly = false }: { readOnly?: boolean }) {
+export function ProductionDresses({ readOnly = false, title }: { readOnly?: boolean; title?: string }) {
   const store = useProduction();
   const { dresses, reminders, loading, error, reload } = store;
 
   const [q, setQ] = useState('');
   const [workshop, setWorkshop] = useState<WorkshopFilter>('todos');
-  const [status, setStatus] = useState<StatusFilter>('activos');
+  const [status, setStatus] = useState<StatusFilter>('pendientes');
   const [openId, setOpenId] = useState<string | null>(null);
+
+  // /taller/vestidos?abrir=12 (desde una notificación)
+  const [params, setParams] = useSearchParams();
+  const toOpen = params.get('abrir');
+  useEffect(() => {
+    if (toOpen && dresses.some((d) => d.id === toOpen)) {
+      setOpenId(toOpen);
+      setStatus('todos');
+      params.delete('abrir');
+      setParams(params, { replace: true });
+    }
+  }, [toOpen, dresses, params, setParams]);
 
   const list = useMemo(
     () =>
@@ -34,38 +47,55 @@ export function ProductionDresses({ readOnly = false }: { readOnly?: boolean }) 
         .filter((d) => `${d.code} ${d.client} ${d.contract}`.toLowerCase().includes(q.toLowerCase()))
         .filter((d) => workshop === 'todos' || d.workshop === workshop)
         .filter((d) => {
-          if (status === 'activos') return d.status !== 'Terminado';
-          if (status === 'riesgo') return d.status !== 'Terminado' && prodRisk(d).tone !== 'ok';
-          return d.status === status;
+          const tone = dressTone(d);
+          if (status === 'pendientes') return d.status !== 'Terminado';
+          if (status === 'sin_iniciar') return d.status === 'Sin iniciar';
+          if (status === 'en_proceso') return d.status === 'En proceso';
+          if (status === 'atrasados') return tone === 'late' || tone === 'risk';
+          if (status === 'terminados') return d.status === 'Terminado';
+          return true;
         })
+        // Primero lo más urgente: prioridad, luego la fecha de entrega. Los terminados al final.
         .sort(
           (a, b) =>
-            a.deadline.localeCompare(b.deadline) || PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]
+            Number(a.status === 'Terminado') - Number(b.status === 'Terminado') ||
+            PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] ||
+            a.deadline.localeCompare(b.deadline)
         ),
     [dresses, q, workshop, status]
   );
 
   const active = dresses.filter((d) => d.status !== 'Terminado');
-  const late = active.filter((d) => prodRisk(d).tone === 'bad').length;
+  const late = active.filter((d) => dressTone(d) === 'late').length;
+  const risky = active.filter((d) => dressTone(d) === 'risk').length;
 
   return (
     <div>
       <PageHeader
-        title={readOnly ? 'Producción' : 'Vestidos'}
+        title={title ?? (readOnly ? 'Producción' : 'Vestidos')}
         subtitle={
           readOnly
-            ? 'Estado de cada vestido en producción. Solo lectura.'
-            : 'Vestidos de los contratos. Abre uno para cambiar su proceso, asignar personal o registrar incidencias.'
+            ? 'Cómo va cada vestido en el taller. Solo puedes verlo; los cambios los hace la jefa de taller.'
+            : 'Ordenados por prioridad. Abre un vestido para iniciar procesos, asignar personal, registrar pagos u observaciones.'
         }
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-6 border-y border-line py-5 md:grid-cols-5">
-        <Stat label="En producción" value={active.filter((d) => d.status === 'En producción').length} />
-        <Stat label="En cola" value={active.filter((d) => d.status === 'En cola').length} />
+      <div className="mb-6 grid grid-cols-2 gap-6 border-y border-line py-5 md:grid-cols-6">
+        <Stat label="Sin iniciar" value={active.filter((d) => d.status === 'Sin iniciar').length} />
+        <Stat label="En proceso" value={active.filter((d) => d.status === 'En proceso').length} />
+        <Stat label="Ojo con la fecha" value={risky} tone={risky ? 'risk' : 'ok'} />
+        <Stat label="Atrasados" value={late} tone={late ? 'bad' : 'ok'} />
         <Stat label="Terminados" value={dresses.filter((d) => d.status === 'Terminado').length} />
-        <Stat label="Atrasados o en riesgo alto" value={late} tone={late ? 'bad' : 'ok'} />
-        <Stat label="Horas pendientes" value={fmtH(active.reduce((s, d) => s + prodTotals(d).remaining, 0))} />
+        <Stat label="Horas por hacer" value={fmtH(active.reduce((s, d) => s + prodTotals(d).remaining, 0))} />
       </div>
+
+      <ul className="mb-4 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-cocoa-muted" aria-label="Leyenda de colores">
+        {Object.values(TONE_STYLES).map((t) => (
+          <li key={t.label} className="inline-flex items-center gap-1.5">
+            <span className={cn('h-2 w-2 rounded-full', t.dot)} aria-hidden="true" /> {t.label}
+          </li>
+        ))}
+      </ul>
 
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
         <div className="relative lg:w-72">
@@ -85,17 +115,19 @@ export function ProductionDresses({ readOnly = false }: { readOnly?: boolean }) 
             ]}
           />
         </div>
-        <div className="lg:w-[30rem]">
+        <div className="-mx-1 overflow-x-auto px-1 lg:w-[34rem]">
           <Segmented<StatusFilter>
+            className="min-w-[30rem]"
             ariaLabel="Filtrar por estado"
             value={status}
             onChange={setStatus}
             options={[
-              { value: 'activos', label: 'Activos' },
-              { value: 'En producción', label: 'Producción' },
-              { value: 'En cola', label: 'En cola' },
-              { value: 'riesgo', label: 'Con riesgo' },
-              { value: 'Terminado', label: 'Terminados' },
+              { value: 'pendientes', label: 'Pendientes' },
+              { value: 'sin_iniciar', label: 'Sin iniciar' },
+              { value: 'en_proceso', label: 'En proceso' },
+              { value: 'atrasados', label: 'Atrasados' },
+              { value: 'terminados', label: 'Terminados' },
+              { value: 'todos', label: 'Todos' },
             ]}
           />
         </div>
@@ -149,7 +181,7 @@ export function ProductionDresses({ readOnly = false }: { readOnly?: boolean }) 
       <div className="rounded-2xl border border-line bg-paper">
         {loading && dresses.length === 0 ? (
           <p className="flex items-center gap-3 p-6 text-sm text-cocoa-muted">
-            <RefreshCwIcon className="h-5 w-5 animate-spin" /> Cargando vestidos desde Django…
+            <RefreshCwIcon className="h-5 w-5 animate-spin" /> Cargando vestidos…
           </p>
         ) : (
           <ProductionDressTable dresses={list} onOpen={setOpenId} />

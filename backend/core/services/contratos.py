@@ -39,9 +39,9 @@ from core.services.planificacion import (
 CERO = Decimal("0.00")
 
 CONCEPTOS_ADELANTO = {
-    1: "Primer adelanto",
-    2: "Segundo adelanto",
-    3: "Tercer adelanto",
+    1: "Primer pago",
+    2: "Segundo pago",
+    3: "Tercer pago",
 }
 
 CAMPOS_CONTRATO = [
@@ -376,7 +376,12 @@ def _aplicar_adelantos(contrato, adelantos, usuario):
         pago.fecha = datos.get("fecha") or pago.fecha or timezone.localdate()
         pago.metodo = datos.get("metodo") or pago.metodo or Pago.Metodo.EFECTIVO
         pago.referencia = datos.get("referencia", pago.referencia) or ""
-        pago.concepto = CONCEPTOS_ADELANTO[orden]
+        if "observaciones" in datos:
+            pago.observaciones = datos.get("observaciones") or ""
+        # Se respeta el nombre que puso el taller; si no hay, el número.
+        pago.concepto = (datos.get("concepto") or "").strip() or (
+            pago.concepto if pago.pk and pago.concepto not in ("", "Pago de contrato") else CONCEPTOS_ADELANTO[orden]
+        )
         pago.confirmado = True
         pago.save()
 
@@ -476,6 +481,19 @@ def crear_contrato(
     _aplicar_adelantos(contrato, adelantos or [], usuario)
 
     planificacion = planificar_vestidos(contrato, a_planificar)
+
+    en_taller = contrato.vestidos.filter(ruta__isnull=False).count()
+    if en_taller:
+        from core.services.notificaciones import ROL_JEFA, notificar, usuarios_con_rol
+
+        notificar(
+            usuarios_con_rol(ROL_JEFA),
+            "CONTRATO",
+            f"Nuevo contrato · {contrato.numero}",
+            f"{cliente.nombre}: {en_taller} vestido(s) para el taller. "
+            f"Entrega el {contrato.fecha_entrega:%d/%m/%Y}.",
+            contrato=contrato,
+        )
 
     return contrato, {
         "cliente_creado": cliente_creado,

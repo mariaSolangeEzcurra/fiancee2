@@ -188,22 +188,10 @@ export function SimulatorForm({
       <Section
         number="01"
         title="Datos de la solicitud"
-        description="Información general y fechas de planificación."
+        description="Solo para simular: no hace falta el nombre de la clienta. Las fechas ya vienen sugeridas."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Cliente" htmlFor="sim-client">
-            <input
-              id="sim-client"
-              className={inputClass}
-              value={input.client}
-              onChange={(event) =>
-                onChange({ client: event.target.value })
-              }
-              placeholder="Nombre de la clienta"
-            />
-          </Field>
-
-          <Field label="Ciudad" htmlFor="sim-city">
+          <Field label="Ciudad (opcional)" htmlFor="sim-city" className="sm:col-span-2">
             <input
               id="sim-city"
               className={inputClass}

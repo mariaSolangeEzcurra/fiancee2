@@ -61,6 +61,10 @@ export interface AsistenciaTrabajadora {
   horas_trabajadas: number | string;
   observaciones_entrada: string;
   observaciones_salida: string;
+  /** Se cerró sola porque no marcó su salida. */
+  cierre_automatico?: boolean;
+  horas_extra?: number | string;
+  motivo_horas_extra?: string;
 }
 
 export interface SesionActivaTaller {
@@ -78,6 +82,10 @@ export interface PanelTaller {
   };
   fecha: string;
   asistencia: AsistenciaTrabajadora | null;
+  /** Última jornada que se cerró sola (para anotar horas extra). */
+  ultima_jornada_automatica?: AsistenciaTrabajadora | null;
+  /** Horas de su horario para hoy. */
+  horas_programadas_hoy?: number | string;
   sesion_activa: SesionActivaTaller | null;
 }
 
@@ -241,6 +249,10 @@ export interface VestidoDisponible {
   cliente?: string;
   tipo_vestido?: string;
   fecha_entrega?: string;
+  prioridad?: 'ALTA' | 'MEDIA' | 'BAJA' | string;
+  descripcion?: string;
+  area_proceso?: string;
+  horas_estimadas_proceso?: number | string;
   /** Proceso que la jefa de taller ya inició. */
   proceso_actual?: string;
   es_de_mi_area?: boolean;
@@ -313,13 +325,32 @@ export function iniciarMiJornada(
 }
 
 export function finalizarMiJornada(
-  observaciones = ''
+  observaciones = '',
+  horasExtra = 0,
+  motivoHorasExtra = ''
 ): Promise<RespuestaOperacionTaller> {
   return requestTaller<RespuestaOperacionTaller>(
     '/mi-jornada/finalizar/',
     'POST',
-    { observaciones }
+    {
+      observaciones,
+      horas_extra: horasExtra > 0 ? horasExtra.toFixed(2) : '0',
+      motivo_horas_extra: motivoHorasExtra,
+    }
   );
+}
+
+/** Anota horas extra en una jornada ya cerrada (por defecto la última). */
+export function registrarHorasExtra(
+  horas: number,
+  motivo: string,
+  fecha?: string
+): Promise<RespuestaOperacionTaller> {
+  return requestTaller<RespuestaOperacionTaller>('/horas-extra/', 'POST', {
+    horas: horas.toFixed(2),
+    motivo,
+    ...(fecha ? { fecha } : {}),
+  });
 }
 
 // ─── Disponibilidad ────────────────────────────────────

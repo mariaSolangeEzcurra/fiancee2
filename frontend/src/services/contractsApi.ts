@@ -223,6 +223,7 @@ export interface Adelanto {
   fecha: string;
   metodo: MetodoPago;
   referencia: string;
+  observaciones?: string;
   confirmado: boolean;
 }
 
@@ -434,6 +435,9 @@ export interface AdelantoInput {
   fecha?: string | null;
   metodo?: MetodoPago;
   referencia?: string;
+  /** Nombre del pago (por defecto "Primer pago", "Segundo pago"…). */
+  concepto?: string;
+  observaciones?: string;
 }
 
 export interface ContratoInput {

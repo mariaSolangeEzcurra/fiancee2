@@ -12,17 +12,16 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { FioHome } from './pages/fio/FioHome';
 import { Simulator } from './pages/fio/Simulator';
 import { Contracts } from './pages/contracts/Contracts';
-import { FioSummary } from './pages/fio/FioSummary';
+import { FioFinance } from './pages/fio/FioFinance';
+import { ProductionDresses } from './pages/shared/ProductionDresses';
 
-import { Finance } from './pages/shared/Finance';
 import { Capacity } from './pages/shared/Capacity';
 import { Staff } from './pages/shared/Staff';
-import { Settings } from './pages/shared/Settings';
 import { Dresses } from './pages/shared/Dresses';
 
 import { JefaHome } from './pages/taller/JefaHome';
 import { Queue } from './pages/taller/Queue';
-import { Alerts } from './pages/taller/Alerts';
+import { Notifications } from './pages/shared/Notifications';
 
 import  MyDay  from './pages/trabajador/MyDay';
 import { MySchedule } from './pages/trabajador/MySchedule';
@@ -32,6 +31,8 @@ import MyAttendance from './pages/trabajador/MyAttendance';
 import { Dashboard } from './pages/gerencia/Dashboard';
 import { Hours } from './pages/gerencia/Hours';
 import { Kpi } from './pages/gerencia/Kpi';
+import { GerenciaFinance } from './pages/gerencia/GerenciaFinance';
+import { GerenciaSettings } from './pages/gerencia/GerenciaSettings';
 import Trabajadoras from "./pages/gerencia/Trabajadoras";
 
 export function App() {
@@ -54,9 +55,11 @@ export function App() {
               <Route index element={<FioHome />} />
               <Route path="simulador" element={<Simulator />} />
               <Route path="contratos" element={<Contracts />} />
-              <Route path="finanzas" element={<Finance />} />
-              <Route path="resumen" element={<FioSummary />} />
-              <Route path="configuracion" element={<Settings />} />
+              <Route path="vestidos" element={<ProductionDresses readOnly title="Vestidos" />} />
+              <Route path="finanzas" element={<FioFinance />} />
+              <Route path="notificaciones" element={<Notifications role="fio" />} />
+              <Route path="resumen" element={<Navigate to="/fio" replace />} />
+              <Route path="configuracion" element={<Navigate to="/fio" replace />} />
             </Route>
 
             {/* JEFATURA DE TALLER */}
@@ -73,8 +76,9 @@ export function App() {
               <Route path="cola" element={<Queue />} />
               <Route path="capacidad" element={<Capacity />} />
               <Route path="personal" element={<Staff />} />
-              <Route path="alertas" element={<Alerts />} />
-              <Route path="configuracion" element={<Settings />} />
+              <Route path="notificaciones" element={<Notifications role="jefa" />} />
+              <Route path="alertas" element={<Navigate to="/taller/notificaciones" replace />} />
+              <Route path="configuracion" element={<Navigate to="/taller" replace />} />
             </Route>
 
             {/* TRABAJADOR DE TALLER */}
@@ -95,6 +99,7 @@ export function App() {
                 element={<Navigate to="/trabajador/horario" replace />}
               />
               <Route path="asistencias" element={<MyAttendance />} />
+              <Route path="notificaciones" element={<Notifications role="trabajador" />} />
             </Route>
 
             {/* GERENCIA */}
@@ -120,11 +125,13 @@ export function App() {
               </Route>
 
               <Route path="horas" element={<Hours />} />
+              <Route path="contratos" element={<Contracts viewOnly />} />
               <Route path="produccion" element={<Dresses readOnly />} />
               <Route path="capacidad" element={<Capacity />} />
-              <Route path="finanzas" element={<Finance />} />
+              <Route path="finanzas" element={<GerenciaFinance />} />
               <Route path="kpi" element={<Kpi />} />
-              <Route path="configuracion" element={<Settings />} />
+              <Route path="notificaciones" element={<Notifications role="gerencia" />} />
+              <Route path="configuracion" element={<GerenciaSettings />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

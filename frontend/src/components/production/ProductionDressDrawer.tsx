@@ -5,6 +5,9 @@ import {
   CameraIcon,
   CircleCheckIcon,
   ClockIcon,
+  HistoryIcon,
+  ListChecksIcon,
+  MessageSquareTextIcon,
   HourglassIcon,
   PackageCheckIcon,
   PauseIcon,
@@ -20,7 +23,16 @@ import {
 import { toast } from 'sonner';
 
 import type { ProductionStore } from '../../hooks/useProduction';
-import { fmtClock, fmtDay, liveHours, prodRisk, prodTotals } from '../../services/productionApi';
+import {
+  dressTone,
+  fmtClock,
+  fmtDay,
+  liveHours,
+  paymentName,
+  prodRisk,
+  prodTotals,
+  TONE_STYLES,
+} from '../../services/productionApi';
 import type {
   NoteKind,
   PaymentMethod,
@@ -32,6 +44,7 @@ import type {
 import { fmtDate } from '../../utils/dates';
 import { cn, fmtH, fmtNum, inputClass } from '../../utils/format';
 import { Drawer } from '../ui/Drawer';
+import { WhatsAppQuick } from '../ui/WhatsAppButton';
 import { Meter } from '../ui/Meter';
 import { Segmented } from '../ui/Segmented';
 import { StatusPill } from '../ui/StatusPill';
@@ -45,6 +58,8 @@ interface Props {
 }
 
 const money = new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' });
+
+type Tab = 'proceso' | 'pagos' | 'observaciones' | 'historial';
 
 /** Duración legible a partir de horas de reloj. */
 function fmtElapsed(hours: number | null | undefined): string {
@@ -86,6 +101,9 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
     removeCharge,
   } = store;
 
+  const [tab, setTab] = useState<Tab>('proceso');
+  useEffect(() => setTab('proceso'), [dressId]);
+
   const live = dresses.find((d) => d.id === dressId);
   const lastRef = useRef<ProdDress | undefined>(live);
   if (live) lastRef.current = live;
@@ -108,9 +126,19 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
   const totals = prodTotals(dress);
   const risk = prodRisk(dress);
   const step = dress.steps[dress.currentIndex];
-  const pool = step && step.area ? workers.filter((w) => (w.areas[step.area] ?? 0) > 0) : [];
-  const others = workers.filter((w) => !pool.includes(w));
+  // Solo se puede asignar a quien sabe hacer este proceso (sus habilidades).
+  const pool = step
+    ? workers.filter((w) => step.eligibleWorkerIds.includes(w.id) || step.workerIds.includes(w.id))
+    : [];
   const pending = dress.steps.filter((s) => !s.isDelivery && !s.done);
+  const tone = TONE_STYLES[dressTone(dress)];
+
+  const tabs: { id: Tab; label: string; icon: typeof ClockIcon; count?: number }[] = [
+    { id: 'proceso', label: 'Proceso', icon: ListChecksIcon },
+    { id: 'pagos', label: 'Pagos', icon: WalletIcon, count: dress.finance.payments.length },
+    { id: 'observaciones', label: 'Observaciones', icon: MessageSquareTextIcon, count: dress.notes.length },
+    { id: 'historial', label: 'Historial', icon: HistoryIcon, count: dress.workLog.length },
+  ];
 
   return (
     <Drawer
@@ -120,13 +148,55 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
       subtitle={
         <span className="flex flex-wrap items-center gap-2">
           <span>{dress.client}</span>
+          <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold', tone.chip)}>
+            <span className={cn('h-2 w-2 rounded-full', tone.dot)} aria-hidden="true" />
+            {dress.status}
+          </span>
           <StatusPill tone={risk.tone}>{risk.label}</StatusPill>
-          <StatusPill tone="neutral">{dress.status}</StatusPill>
           <StatusPill tone={dress.priority === 'Alta' ? 'risk' : 'neutral'}>Prioridad {dress.priority.toLowerCase()}</StatusPill>
         </span>
       }
     >
-      <div className="space-y-8">
+      <div className="space-y-6">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-xl border border-line bg-paper p-4 text-sm sm:grid-cols-4">
+          <Info label="Entrega" value={fmtDate(dress.deadline)} />
+          <Info label="Evento" value={dress.eventDate ? `${dress.type} · ${fmtDate(dress.eventDate)}` : dress.type} />
+          <Info label="Vestido" value={`${dress.dressType} · ${dress.workshop}`} />
+          <Info label="Contrato" value={dress.contract} />
+        </dl>
+
+        <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 px-4 py-3">
+          <WhatsAppQuick phone={dress.clientPhone} client={dress.client} code={dress.code} ready={dress.status === 'Terminado'} />
+        </div>
+
+        <nav role="tablist" aria-label="Secciones del vestido" className="flex gap-1 overflow-x-auto border-b border-line">
+          {tabs.map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  '-mb-px inline-flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors duration-150',
+                  active ? 'border-cocoa text-cocoa' : 'border-transparent text-cocoa-muted hover:text-cocoa'
+                )}
+              >
+                <Icon className="h-4 w-4" aria-hidden="true" />
+                {t.label}
+                {!!t.count && (
+                  <span className="tabular rounded-full bg-cream px-1.5 text-[11px] text-cocoa-muted">{t.count}</span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {tab === 'proceso' && (
+        <div className="space-y-8">
         {dress.reminders.length > 0 && (
           <section className="space-y-2">
             {dress.reminders.map((r) => (
@@ -147,22 +217,11 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
           </section>
         )}
 
-        <section>
-          <h3 className="font-display text-xl font-semibold text-cocoa">Información general</h3>
-          <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
-            <Info label="Clienta" value={dress.clientPhone ? `${dress.client} · ${dress.clientPhone}` : dress.client} />
-            <Info label="Evento" value={dress.type} />
-            <Info label="Contrato" value={`${dress.contract} · ${fmtDate(dress.contractDate)}`} />
-            <Info label="Vestido" value={dress.dressType} />
-            <Info label="Fecha del evento" value={dress.eventDate ? fmtDate(dress.eventDate) : '—'} />
-            <Info label="Fecha límite" value={fmtDate(dress.deadline)} />
-            <Info label="Taller" value={dress.workshop} />
-            <Info label="Fin estimado" value={dress.estimatedEnd ? fmtDate(dress.estimatedEnd) : '—'} />
-          </dl>
-          {dress.description && dress.description !== dress.dressType && (
-            <p className="mt-3 text-sm text-cocoa-muted">{dress.description}</p>
-          )}
-        </section>
+        {dress.description && dress.description !== dress.dressType && (
+          <p className="text-sm text-cocoa-muted">
+            {dress.description && dress.description !== dress.dressType && dress.description}
+          </p>
+        )}
 
         {dress.workshopCode !== 'A' && (
           <section className="rounded-xl border border-gold-soft/60 bg-champagne-soft p-5">
@@ -276,9 +335,12 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
 
             {!step.isDelivery && step.timeType === 'TRABAJO' && (
               <div className="mt-5">
-                <p className="text-xs font-medium text-cocoa-muted">Trabajadoras asignadas</p>
+                <p className="text-xs font-medium text-cocoa-muted">
+                  {readOnly ? 'Personal asignado' : 'Asignar personal'}
+                  {!readOnly && <span className="font-normal"> · solo aparece quien sabe hacer «{step.name.toLowerCase()}»</span>}
+                </p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {(readOnly ? workers.filter((w) => step.workerIds.includes(w.id)) : [...pool, ...others.filter((w) => step.workerIds.includes(w.id))]).map((w) => {
+                  {(readOnly ? workers.filter((w) => step.workerIds.includes(w.id)) : pool).map((w) => {
                     const on = step.workerIds.includes(w.id);
                     return (
                       <button
@@ -297,7 +359,9 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
                     );
                   })}
                   {readOnly && step.workerIds.length === 0 && <span className="text-xs text-cocoa-faint">Sin asignar</span>}
-                  {!readOnly && pool.length === 0 && <span className="text-xs text-cocoa-faint">No hay trabajadoras de esta área.</span>}
+                  {!readOnly && pool.length === 0 && (
+                    <span className="text-xs text-cocoa-faint">Nadie tiene esta habilidad. Agrégala en Personal.</span>
+                  )}
                 </div>
                 {step.sessions.length > 0 && (
                   <div className="mt-4">
@@ -314,22 +378,6 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
                       ))}
                     </ul>
                   </div>
-                )}
-                {!readOnly && others.length > 0 && (
-                  <select
-                    aria-label="Reasignar a otra trabajadora"
-                    className={cn(inputClass, 'mt-2 max-w-xs text-xs')}
-                    value=""
-                    disabled={busy}
-                    onChange={(e) => e.target.value && void toggleStepWorker(dress.id, dress.currentIndex, e.target.value)}
-                  >
-                    <option value="">Reasignar a otra área…</option>
-                    {others.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name} · {w.role}
-                      </option>
-                    ))}
-                  </select>
                 )}
               </div>
             )}
@@ -409,6 +457,10 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
           onAdd={(data) => addStep(dress.id, data)}
         />
 
+        </div>
+        )}
+
+        {tab === 'pagos' && (
         <MoneySection
           dress={dress}
           readOnly={readOnly}
@@ -417,15 +469,18 @@ export function ProductionDressDrawer({ dressId, onClose, readOnly = false, stor
           onCharge={(data) => addCharge(dress.id, data)}
           onRemoveCharge={(id) => removeCharge(dress.id, id)}
         />
+        )}
 
-        <WorkLog dress={dress} now={now} />
+        {tab === 'historial' && <WorkLog dress={dress} now={now} />}
 
+        {tab === 'observaciones' && (
         <NotesSection
           dress={dress}
           readOnly={readOnly}
           busy={busy}
           onAdd={(text, kind, options) => addNote(dress.id, text, kind, options)}
         />
+        )}
       </div>
     </Drawer>
   );
@@ -697,7 +752,14 @@ function MoneySection({
   dress: ProdDress;
   readOnly: boolean;
   busy: boolean;
-  onPayment: (data: { amount: number; method?: PaymentMethod; reference?: string }) => Promise<boolean>;
+  onPayment: (data: {
+    amount: number;
+    method?: PaymentMethod;
+    reference?: string;
+    number?: number;
+    concept?: string;
+    notes?: string;
+  }) => Promise<boolean>;
   onCharge: (data: { concept: string; amount: number; description?: string }) => Promise<boolean>;
   onRemoveCharge: (id: number) => Promise<boolean>;
 }) {
@@ -707,12 +769,24 @@ function MoneySection({
   const [method, setMethod] = useState<PaymentMethod>('EFECTIVO');
   const [reference, setReference] = useState('');
   const [concept, setConcept] = useState('');
+  const used = f.usedPaymentNumbers ?? [];
+  const nextNumber = (() => {
+    let n = 1;
+    while (used.includes(n)) n += 1;
+    return n;
+  })();
+  const [number, setNumber] = useState<number>(nextNumber);
+  const [payName, setPayName] = useState('');
+  const [payNotes, setPayNotes] = useState('');
+  useEffect(() => setNumber(nextNumber), [nextNumber]);
 
   const reset = () => {
     setMode('none');
     setAmount('');
     setReference('');
     setConcept('');
+    setPayName('');
+    setPayNotes('');
   };
 
   const submit = async () => {
@@ -727,7 +801,14 @@ function MoneySection({
     }
     const ok =
       mode === 'pago'
-        ? await onPayment({ amount: value, method, reference: reference.trim() })
+        ? await onPayment({
+            amount: value,
+            method,
+            reference: reference.trim(),
+            number,
+            concept: payName.trim() || paymentName(number),
+            notes: payNotes.trim(),
+          })
         : await onCharge({ concept: concept.trim(), amount: value });
     if (ok) reset();
   };
@@ -760,7 +841,7 @@ function MoneySection({
             onClick={() => setMode(mode === 'pago' ? 'none' : 'pago')}
             className={cn('inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold', mode === 'pago' ? 'border-cocoa bg-cocoa text-ivory' : 'border-line text-cocoa hover:bg-cream')}
           >
-            <WalletIcon className="h-3.5 w-3.5" /> Registrar dinero recibido
+            <WalletIcon className="h-3.5 w-3.5" /> Registrar pago
           </button>
           <button
             type="button"
@@ -774,6 +855,24 @@ function MoneySection({
 
       {mode !== 'none' && (
         <div className="mt-3 grid gap-3 rounded-xl border border-gold-soft bg-champagne-soft/40 p-4 sm:grid-cols-3">
+          {mode === 'pago' && (
+            <>
+              <label className="flex flex-col gap-1.5 text-xs font-medium text-cocoa-muted">
+                ¿Qué pago es?
+                <select className={inputClass} value={number} onChange={(e) => setNumber(Number(e.target.value))}>
+                  {Array.from({ length: Math.max(nextNumber + 2, 5) }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n} disabled={used.includes(n)}>
+                      {paymentName(n)}{used.includes(n) ? ' (ya registrado)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs font-medium text-cocoa-muted sm:col-span-2">
+                Nombre (opcional)
+                <input className={inputClass} value={payName} onChange={(e) => setPayName(e.target.value)} placeholder={paymentName(number)} />
+              </label>
+            </>
+          )}
           {mode === 'cobro' && (
             <label className="flex flex-col gap-1.5 text-xs font-medium text-cocoa-muted sm:col-span-2">
               Modificación que se cobra
@@ -798,6 +897,10 @@ function MoneySection({
               <label className="flex flex-col gap-1.5 text-xs font-medium text-cocoa-muted">
                 N.º de operación
                 <input className={inputClass} value={reference} onChange={(e) => setReference(e.target.value)} />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs font-medium text-cocoa-muted sm:col-span-3">
+                Observación (opcional)
+                <input className={inputClass} value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="Ej.: pagó la mamá de la novia" />
               </label>
             </>
           )}
@@ -848,15 +951,21 @@ function MoneySection({
 
       {f.payments.length > 0 && (
         <div className="mt-4">
-          <p className="text-xs font-medium text-cocoa-muted">Pagos del contrato</p>
+          <p className="text-xs font-medium text-cocoa-muted">Pagos del contrato (los mismos que ve comercial)</p>
           <ul className="mt-2 divide-y divide-line rounded-xl border border-line">
             {f.payments.map((p) => (
               <li key={p.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
                 <div className="min-w-0">
-                  <p className="truncate text-cocoa">{p.concept || 'Pago'}</p>
+                  <p className="truncate text-cocoa">
+                    {p.concept || paymentName(p.number)}
+                    {p.fromWorkshop && (
+                      <span className="ml-2 rounded-full bg-champagne-soft px-1.5 py-0.5 text-[10px] font-medium text-cocoa">taller</span>
+                    )}
+                  </p>
                   <p className="text-[11px] text-cocoa-muted">
                     {fmtDay(p.date)} · {p.method}{p.reference ? ` · ${p.reference}` : ''}
                   </p>
+                  {p.notes && <p className="mt-0.5 text-[11px] italic text-cocoa-muted">{p.notes}</p>}
                 </div>
                 <span className="tabular font-semibold text-green-800">{money.format(p.amount)}</span>
               </li>

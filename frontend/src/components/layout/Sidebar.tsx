@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   Link,
   NavLink,
@@ -12,13 +12,11 @@ import {
   UsersIcon,
 } from 'lucide-react';
 
-import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { navigation } from '../../data/navigation';
 import { roleProfiles } from '../../data/roles';
 import type { Role } from '../../types';
-import { buildAlerts } from '../../utils/alerts';
-import { TODAY } from '../../utils/dates';
+import { useNotifications } from '../../contexts/NotificationsContext';
 import { cn } from '../../utils/format';
 
 interface SidebarProps {
@@ -27,7 +25,6 @@ interface SidebarProps {
 }
 
 export function Sidebar({ role, onNavigate }: SidebarProps) {
-  const { dresses, workers } = useApp();
   const { logout, user } = useAuth();
 
   const navigate = useNavigate();
@@ -53,13 +50,8 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
     role === 'gerencia' &&
     location.pathname.startsWith('/gerencia/personal');
 
-  const criticalCount = useMemo(
-    () =>
-      buildAlerts(dresses, workers, TODAY).filter(
-        (alert) => alert.severity === 'bad'
-      ).length,
-    [dresses, workers]
-  );
+  // Notificaciones sin leer (reales, del backend).
+  const { unread } = useNotifications();
 
   const handleLogout = () => {
     logout();
@@ -158,9 +150,9 @@ export function Sidebar({ role, onNavigate }: SidebarProps) {
                 {item.label}
               </span>
 
-              {item.label === 'Alertas' && criticalCount > 0 && (
-                <span className="rounded-full bg-bad px-1.5 py-0.5 text-[10px] font-semibold text-ivory">
-                  {criticalCount}
+              {item.label === 'Notificaciones' && unread > 0 && (
+                <span className="tabular rounded-full bg-bad px-1.5 py-0.5 text-[10px] font-semibold text-ivory">
+                  {unread > 99 ? '99+' : unread}
                 </span>
               )}
             </NavLink>
