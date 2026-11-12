@@ -203,7 +203,7 @@ function getHoursFromCatalog(
 
 function validateInput(input?: ContractInput | null): string | null {
   if (!input) return 'Completa los datos antes de simular.';
-  if (!input.corteId) return 'Selecciona un vestido del catálogo de Django.';
+  if (!input.corteId) return 'Elige el modelo de vestido.';
 
   if (!input.eventDate || !input.deliveryDate) {
     return 'Completa la fecha del evento y la fecha de entrega.';
@@ -278,7 +278,7 @@ export function useSimulator(initial?: ContractInput) {
       );
 
       if (templates.length === 0) {
-        throw new Error('Django no devolvió rutas utilizables en el catálogo.');
+        throw new Error('El catálogo no tiene modelos disponibles.');
       }
 
       setCatalog({ templates, catalog: response, loading: false, error: null });
@@ -287,7 +287,7 @@ export function useSimulator(initial?: ContractInput) {
         templates: [],
         catalog: null,
         loading: false,
-        error: error instanceof Error ? error.message : 'No se pudo cargar el catálogo de Django.',
+        error: error instanceof Error ? error.message : 'No se pudo cargar el catálogo.',
       });
     }
   }, []);
@@ -342,7 +342,7 @@ export function useSimulator(initial?: ContractInput) {
       setSimulatedInputKey(null);
 
       if (catalog.loading) {
-        setSimulationError('Espera a que termine de cargar el catálogo de Django.');
+        setSimulationError('Espera a que termine de cargar el catálogo.');
         return;
       }
       if (!catalog.catalog || catalog.error || templates.length === 0) {
@@ -387,7 +387,7 @@ export function useSimulator(initial?: ContractInput) {
           setResult(null);
           setSimulatedInputKey(null);
           setSimulationError(
-            error instanceof Error ? error.message : 'No se pudo ejecutar la simulación en Django.',
+            error instanceof Error ? error.message : 'No se pudo hacer la simulación. Intenta de nuevo.',
           );
         } finally {
           if (runIdRef.current === runId) setSimulating(false);

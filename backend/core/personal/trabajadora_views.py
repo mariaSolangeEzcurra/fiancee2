@@ -65,6 +65,8 @@ class EsPersonalTaller(IsAuthenticated):
     que tengan un perfil de trabajadora asociado.
     """
 
+    message = "Tu usuario no está vinculado a una ficha de personal. Pide a gerencia que lo vincule."
+
     def has_permission(self, request, view):
         if not super().has_permission(request, view):
             return False

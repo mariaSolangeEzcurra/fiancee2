@@ -95,7 +95,7 @@ export function Staff() {
             onChange={(e) => setQ(e.target.value)}
           />
         </div>
-        <div className="flex gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+        <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-1 sm:pb-0">
           {['todas', ...areas].map((a) => (
             <button
               key={a}
@@ -135,7 +135,7 @@ export function Staff() {
           No hay personas con estos filtros.
         </p>
       ) : (
-        <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {list.map((w) => (
             <WorkerCard key={w.id} w={w} onOpen={() => setOpenId(w.id)} />
           ))}
@@ -151,11 +151,11 @@ function WorkerCard({ w, onOpen }: { w: StaffMember; onOpen: () => void }) {
   const st = TODAY_STYLE[w.today.status];
   const avance = w.weekHours ? Math.min(1, w.weekWorked / w.weekHours) : 0;
   return (
-    <li>
+    <li className="min-w-0">
       <button
         type="button"
         onClick={onOpen}
-        className="group flex h-full w-full flex-col rounded-2xl border border-line bg-paper p-4 text-left transition-colors hover:border-nude hover:bg-cream/40"
+        className="group flex h-full w-full min-w-0 flex-col rounded-2xl border border-line bg-paper p-4 text-left transition-colors hover:border-nude hover:bg-cream/40"
       >
         <span className="flex items-center gap-3">
           <span className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blush-soft text-sm font-semibold text-blush-deep">

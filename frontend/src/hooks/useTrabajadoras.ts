@@ -7,12 +7,9 @@ import {
   type FormEvent,
 } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { API_URL } from "../services/apiBase";
 
-const API_BASE = (
-  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
-).replace(/\/$/, "");
-
-const API = `${API_BASE}/api/gerencia/personal`;
+const API = `${API_URL}/gerencia/personal`;
 
 export const DIAS = [
   "Lunes",
@@ -309,7 +306,7 @@ export function useTrabajadoras() {
         );
       } catch {
         throw new Error(
-          "No se pudo conectar con Django. Verifica el servidor y la URL de la API."
+          "No se pudo conectar con el servidor. Revisa que esté encendido."
         );
       }
 

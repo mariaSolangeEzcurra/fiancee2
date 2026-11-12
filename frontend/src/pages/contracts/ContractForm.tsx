@@ -333,6 +333,9 @@ function validateVestidos(form: FormState): string | null {
     if (num(item.precio) < 0 || num(item.precio_otros) < 0) {
       return `${label}: los precios no pueden ser negativos.`;
     }
+    if (num(item.precio) + num(item.precio_otros) <= 0) {
+      return `${label}: pon el precio (no puede quedar en S/ 0).`;
+    }
     if (item.procesos?.some((p) => p.horas === '' || num(p.horas) < 0)) {
       return `${label}: revisa las horas de los procesos.`;
     }
@@ -650,10 +653,11 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
     });
   };
 
-  const horasItem = (item: ItemDraft) =>
+  /** Horas de trabajo del personal (las esperas no ocupan al personal). */
+  const horasItem = (item: ItemDraft, tipo: 'TRABAJO' | 'ESPERA' = 'TRABAJO') =>
     operacionesDe(item).reduce((s, op) => {
       const p = procesoDe(item, op);
-      return p.incluido ? s + num(p.horas) : s;
+      return p.incluido && op.tipo_tiempo === tipo ? s + num(p.horas) : s;
     }, 0);
 
   const pickClient = (c: Cliente) => {
@@ -781,7 +785,11 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
   const irA = (destino: number) => {
     // Al avanzar se revisa cada paso; retroceder siempre se puede.
     for (let i = step; i < destino; i += 1) {
-      const error = validateStep(form, i);
+      const error =
+        validateStep(form, i) ??
+        (i === 3 && pagado > total + 0.001
+          ? `Los pagos (${money.format(pagado)}) superan el monto total (${money.format(total)}). Revisa los montos o los precios.`
+          : null);
       if (error) {
         setStep(i);
         toast.error(error);
@@ -798,7 +806,7 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
     return (
       <section className="flex items-center gap-3 rounded-xl border border-line bg-paper p-4 text-sm text-cocoa-muted">
         <RefreshCwIcon className="h-5 w-5 animate-spin" />
-        {isEdit ? 'Cargando contrato…' : 'Cargando catálogo desde Django…'}
+        {isEdit ? 'Cargando contrato…' : 'Cargando catálogo…'}
       </section>
     );
   }
@@ -1111,7 +1119,10 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
                             )}
                           </span>
                           <span className="inline-flex items-center gap-2 text-xs text-cocoa-muted">
-                            {horasItem(item).toFixed(2)} h
+                            {horasItem(item).toFixed(0)} h de trabajo
+                            {horasItem(item, 'ESPERA') > 0 && (
+                              <span className="hidden sm:inline"> · + {Math.round(horasItem(item, 'ESPERA') / 24)} días de espera</span>
+                            )}
                             <ChevronDownIcon className={`h-4 w-4 transition ${item.verProcesos ? 'rotate-180' : ''}`} />
                           </span>
                         </button>
@@ -1187,6 +1198,11 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
           {/* 4. Pagos */}
           {step === 3 && (
           <Card title="Pagos y garantía" subtitle="Son los mismos pagos que ve el taller: si la jefa registra el «Segundo pago», aparece aquí.">
+            {pagado > total + 0.001 && (
+              <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                Los pagos ({money.format(pagado)}) superan el monto total del contrato ({money.format(total)}). Revisa los montos o vuelve a «Vestidos» para poner los precios.
+              </p>
+            )}
             <div className="space-y-3">
               {form.adelantos.map((a, i) => (
                 <div key={i} className={`grid gap-3 rounded-xl border p-3 sm:grid-cols-4 ${a.desdeTaller ? 'border-gold-soft bg-champagne-soft/30' : 'border-line bg-cream/30'}`}>

@@ -143,7 +143,7 @@ export function AppProvider({
   const currentWorkerId = 'w5';
 
   /**
-   * Descarga el catálogo desde Django.
+   * Descarga el catálogo del sistema.
    * Si falla, conserva las plantillas locales y expone el error
    * para que la interfaz pueda mostrar el estado de conexión.
    */
@@ -157,7 +157,7 @@ export function AppProvider({
 
       if (backendTemplates.length === 0) {
         throw new Error(
-          'Django respondió, pero no devolvió plantillas de operaciones.'
+          'El sistema respondió, pero no devolvió plantillas de operaciones.'
         );
       }
 
@@ -182,7 +182,7 @@ export function AppProvider({
       setCatalogError(
         error instanceof Error
           ? error.message
-          : 'No se pudo cargar el catálogo desde Django.'
+          : 'No se pudo cargar el catálogo del sistema.'
       );
     }
   }, []);

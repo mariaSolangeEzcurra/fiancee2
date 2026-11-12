@@ -1446,10 +1446,12 @@ def cargar_catalogo_inicial():
                         defaults={"area_responsable": area},
                     )
 
+                    # Comprar materiales y lavandería son plazos (proveedor,
+                    # lavandería externa): pasa el tiempo, pero no ocupan
+                    # horas del personal del taller.
                     tipo_tiempo = (
                         PlantillaOperacion.TipoTiempo.ESPERA
-                        if taller == "C"
-                        and nombre_normalizado == "compra materiales"
+                        if nombre_normalizado in ("compra materiales", "lavandería")
                         else PlantillaOperacion.TipoTiempo.TRABAJO
                     )
 

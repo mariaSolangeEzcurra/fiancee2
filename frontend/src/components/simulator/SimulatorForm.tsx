@@ -188,21 +188,9 @@ export function SimulatorForm({
       <Section
         number="01"
         title="Datos de la solicitud"
-        description="Solo para simular: no hace falta el nombre de la clienta. Las fechas ya vienen sugeridas."
+        description="Solo para simular: no hace falta el nombre de la clienta ni otros datos. Las fechas ya vienen sugeridas."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Ciudad (opcional)" htmlFor="sim-city" className="sm:col-span-2">
-            <input
-              id="sim-city"
-              className={inputClass}
-              value={input.city}
-              onChange={(event) =>
-                onChange({ city: event.target.value })
-              }
-              placeholder="Ciudad"
-            />
-          </Field>
-
           <Field label="Tipo de vestido" className="sm:col-span-2">
             <Segmented<DressType>
               ariaLabel="Tipo de vestido"
@@ -264,7 +252,7 @@ export function SimulatorForm({
       <Section
         number="02"
         title="Ruta de producción"
-        description="Selecciona el taller y una ruta registrada en Django."
+        description="Elige dónde se hará y el modelo de vestido."
       >
         <Field label="Taller previsto">
           <Segmented<Workshop>
@@ -290,13 +278,13 @@ export function SimulatorForm({
         {input.workshop === 'Taller C' && (
           <p className="mt-3 rounded-xl bg-cream px-3 py-3 text-xs leading-relaxed text-cocoa">
             La ruta del Taller C se calculará con las operaciones configuradas
-            en Django para ese taller. Las horas mostradas dependerán de los
+            en el sistema para ese taller. Las horas mostradas dependerán de los
             datos recibidos del catálogo.
           </p>
         )}
 
         <div className="mt-4">
-          <Field label="Vestido / ruta de producción" htmlFor="sim-corte">
+          <Field label="Modelo de vestido" htmlFor="sim-corte">
             <select
               id="sim-corte"
               className={inputClass}
@@ -316,14 +304,21 @@ export function SimulatorForm({
                   No hay rutas disponibles para este taller
                 </option>
               ) : (
-                workshopTemplates.map((template) => (
+                [
+                  !selectedTemplate && (
+                    <option key="elige" value="" disabled>
+                      Elige el modelo…
+                    </option>
+                  ),
+                  ...workshopTemplates.map((template) => (
                   <option
                     key={`${template.backendRouteId}-${template.backendDressId}`}
                     value={String(template.backendDressId)}
                   >
                     {template.name}
                   </option>
-                ))
+                  )),
+                ]
               )}
             </select>
           </Field>
@@ -331,7 +326,7 @@ export function SimulatorForm({
 
         {catalogLoading && (
           <p className="mt-3 text-sm text-cocoa-muted">
-            Cargando rutas desde Django…
+            Cargando modelos…
           </p>
         )}
 
@@ -362,7 +357,7 @@ export function SimulatorForm({
               </p>
               <p className="mt-1 text-xs text-cocoa-muted">
                 {selectedTemplate.workshop} · Ruta vinculada al catálogo
-                de Django
+                del sistema
               </p>
             </div>
           </div>

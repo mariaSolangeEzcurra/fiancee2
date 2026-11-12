@@ -25,10 +25,19 @@ HORAS_SIN_HORARIO = Decimal("8")
 
 
 def horas_programadas(trabajadora, fecha):
+    """Horas de su horario para ese día (0 = día libre)."""
     registro = DisponibilidadSemanal.objects.filter(
         trabajadora=trabajadora, dia_semana=fecha.weekday()
     ).first()
-    horas = registro.horas_disponibles if registro else Decimal("0")
+    return registro.horas_disponibles if registro else Decimal("0")
+
+
+def horas_para_cierre(trabajadora, fecha):
+    """
+    Con cuántas horas se cierra una jornada olvidada: las de su horario;
+    si vino en su día libre, una jornada estándar.
+    """
+    horas = horas_programadas(trabajadora, fecha)
     return horas if horas > 0 else HORAS_SIN_HORARIO
 
 
@@ -83,7 +92,7 @@ def cerrar_jornadas_vencidas(trabajadora=None):
     cerradas = 0
     jefas = None
     for registro in pendientes:
-        horas = horas_programadas(registro.trabajadora, registro.fecha)
+        horas = horas_para_cierre(registro.trabajadora, registro.fecha)
         salida = min(registro.entrada + timedelta(hours=float(horas)), _fin_del_dia(registro.fecha))
         registro.salida = salida
         registro.cierre_automatico = True

@@ -1015,7 +1015,7 @@ export default function Trabajadoras() {
           </div>
 
           <p className="mt-4 text-xs leading-5 text-[#A2958B]">
-            Este resumen se calcula a partir del personal recibido desde Django.
+            Este resumen se calcula a partir del personal recibido del sistema.
             No modifica ni crea registros en el backend.
           </p>
         </section>
@@ -1351,7 +1351,7 @@ export default function Trabajadoras() {
 
               <p className="rounded-xl bg-[#FAF6F2] p-3 text-xs leading-5 text-[#928176]">
                 Usa 0 para los días de descanso. El sistema guarda los siete
-                días en la disponibilidad semanal de Django.
+                días en la disponibilidad semanal del sistema.
               </p>
 
               {t.error && (

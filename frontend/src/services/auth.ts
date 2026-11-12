@@ -1,9 +1,7 @@
 
-const API_URL = (
-  import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
-).replace(/\/+$/, '');
+import { API_URL } from './apiBase';
 
-const AUTH_URL = `${API_URL}/api/auth`;
+const AUTH_URL = `${API_URL}/auth`;
 
 export type UserRole =
   | 'comercial'
@@ -89,7 +87,7 @@ export async function login(
 
   if (!data?.usuario || !data.usuario.rol) {
     throw new Error(
-      'Los tokens se recibieron, pero falta la información del usuario o su rol. Revisa InicioSesionSerializer en Django.'
+      'Tu usuario no tiene un rol asignado. Pide a gerencia que lo revise.'
     );
   }
 

@@ -1,7 +1,5 @@
 
-const API_URL = (
-  import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
-).replace(/\/+$/, '');
+import { API_URL } from './apiBase';
 
 // Esta ruta es relativa a VITE_API_URL.
 const REFRESH_PATH = (
@@ -177,7 +175,7 @@ async function refreshAccessToken(): Promise<string | null> {
     } catch {
       // Un fallo de red no demuestra que el refresh haya expirado.
       throw new Error(
-        'No se pudo conectar con Django para renovar la sesión. ' +
+        'No se pudo conectar con el servidor para renovar la sesión. ' +
           'Verifica que el backend esté activo.'
       );
     }
@@ -200,7 +198,7 @@ async function refreshAccessToken(): Promise<string | null> {
 
     if (!result || typeof result.access !== 'string' || !result.access) {
       throw new Error(
-        'La respuesta de renovación de Django no contiene un token de acceso válido.'
+        'Tu sesión venció. Vuelve a iniciar sesión.'
       );
     }
 
@@ -252,8 +250,8 @@ async function fetchApi(
     });
   } catch {
     throw new Error(
-      `No se pudo conectar con el backend en ${API_URL}. ` +
-        'Verifica que Django esté ejecutándose y que la URL sea correcta.'
+      `No se pudo conectar con el servidor (${API_URL}). ` +
+        'Revisa que el servidor esté encendido.'
     );
   }
 }

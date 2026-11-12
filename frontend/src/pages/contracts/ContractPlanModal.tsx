@@ -205,7 +205,7 @@ export function ContractPlanModal({
                     Calculando planificación…
                   </p>
                   <p className="text-sm text-cocoa-muted">
-                    Revisando la capacidad del taller en Django.
+                    Revisando la capacidad del taller en el sistema.
                   </p>
                 </div>
               ) : error ? (

@@ -150,7 +150,7 @@ export function AreaNeedsTable({
 
       <p className="mt-3 text-xs leading-relaxed text-cocoa-muted">
         Las horas restantes corresponden a la capacidad devuelta por
-        Django. No garantizan que todas esas horas puedan utilizarse
+        el sistema. No garantizan que todas esas horas puedan utilizarse
         en la fecha de cada operación. Los nombres de demostración
         se ocultan, pero deben corregirse también en el origen de datos.
       </p>

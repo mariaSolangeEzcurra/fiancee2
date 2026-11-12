@@ -31,8 +31,8 @@ from .serializers import (
 
 class EsGerencia(BasePermission):
     """
-    Acceso exclusivo para superusuarios o miembros
-    del grupo Gerencia de Django.
+    Acceso exclusivo para gerencia: usuarios con rol "gerencia",
+    superusuarios o miembros del grupo Gerencia de Django.
     """
 
     message = "No tienes permisos de Gerencia."
@@ -45,6 +45,7 @@ class EsGerencia(BasePermission):
             and usuario.is_authenticated
             and (
                 usuario.is_superuser
+                or getattr(usuario, "rol", None) == "gerencia"
                 or usuario.groups.filter(
                     name="Gerencia"
                 ).exists()

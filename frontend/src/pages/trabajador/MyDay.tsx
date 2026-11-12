@@ -163,7 +163,7 @@ export default function MyDay() {
   const asistencia = panel?.asistencia ?? null;
   const enJornada = !!asistencia && !asistencia.salida;
   const terminoHoy = !!asistencia?.salida;
-  const horasHoy = Number(panel?.horas_programadas_hoy ?? 8);
+  const horasHoy = Number(panel?.horas_programadas_hoy ?? 0);
   const nombre = panel?.trabajadora.nombre?.trim().split(/\s+/)[0] || "";
 
   const salidaEstimada = useMemo(() => {
@@ -193,6 +193,21 @@ export default function MyDay() {
 
   const jornadaAuto = panel?.ultima_jornada_automatica ?? null;
   const pedirExtraAuto = !!jornadaAuto && Number(jornadaAuto.horas_extra ?? 0) === 0;
+
+  if (!cargando && !panel && /permiso|vinculad|trabajadora/i.test(error)) {
+    return (
+      <div className="mx-auto max-w-md pt-10 text-center">
+        <Shirt size={32} className="mx-auto text-gold" />
+        <h1 className="mt-3 font-display text-2xl font-semibold text-cocoa">Tu usuario aún no tiene ficha de personal</h1>
+        <p className="mt-2 text-sm text-cocoa-muted">
+          Para marcar tu jornada y ver tus vestidos, gerencia debe vincular tu usuario a tu ficha en <b>Personal</b>.
+        </p>
+        <button type="button" onClick={() => void cargar(true)} className={`${bigSecondary} mt-5`}>
+          <RefreshCw size={16} /> Volver a intentar
+        </button>
+      </div>
+    );
+  }
 
   if (cargando) {
     return (
@@ -433,12 +448,13 @@ function Jornada({
         </div>
         <div className="rounded-xl bg-paper/80 p-3">
           <p className="text-[11px] text-cocoa-muted">{salida ? "Salida" : "Sales aprox."}</p>
-          <p className="tabular mt-1 text-lg font-semibold text-cocoa">{hora(salida ?? salidaEstimada)}</p>
+          <p className="tabular mt-1 text-lg font-semibold text-cocoa">{hora(salida ?? (horasHoy > 0 ? salidaEstimada : null))}</p>
         </div>
         <div className="rounded-xl bg-paper/80 p-3">
           <p className="text-[11px] text-cocoa-muted">Tu horario hoy</p>
           <p className="tabular mt-1 text-lg font-semibold text-cocoa">
-            {horasHoy} h{horasExtra > 0 ? ` + ${horasExtra}` : ""}
+            {horasHoy > 0 ? `${horasHoy} h` : "Libre"}
+            {horasExtra > 0 ? ` + ${horasExtra}` : ""}
           </p>
         </div>
       </div>
@@ -460,7 +476,9 @@ function Jornada({
             <LogOut size={18} /> Marcar salida
           </button>
           <p className="mt-2 text-center text-xs text-cocoa-muted">
-            Si te olvidas, tu jornada se cierra sola con tu horario.
+            {horasHoy > 0
+              ? "Si te olvidas, tu jornada se cierra sola con tu horario."
+              : "Hoy es tu día libre: si te olvidas, se cierra sola a las 8 h."}
             {hayVestidoAbierto && " El vestido que tienes abierto también se cerrará."}
           </p>
         </>

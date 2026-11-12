@@ -138,6 +138,8 @@ class AdelantoSerializer(serializers.ModelSerializer):
             "fecha",
             "metodo",
             "referencia",
+            "observaciones",
+            "vestido",
             "confirmado",
         ]
         read_only_fields = fields

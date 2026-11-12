@@ -31,6 +31,15 @@ from core.services.planificacion import CapacidadTaller
 
 from .views import PermisoProduccion
 
+
+class PermisoPersonal(PermisoProduccion):
+    """Personal y capacidad: solo jefa de taller y gerencia (comercial no)."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        return request.user.is_superuser or getattr(request.user, "rol", None) in ("jefa_taller", "gerencia")
+
 CERO = Decimal("0")
 DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 DIAS_LARGOS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -43,7 +52,9 @@ def h(valor):
 
 
 def iniciales(nombre):
-    partes = [p for p in (nombre or "").split() if p]
+    partes = [p for p in (nombre or "").split() if p[:1].isalpha()]
+    if len(partes) > 2 and partes[0].isupper():
+        partes = partes[1:]  # "DEMO - Bordadora 01" → "Bordadora"
     return "".join(p[0] for p in partes[:2]).upper() or "?"
 
 
@@ -94,7 +105,7 @@ def estado_hoy(trabajadora, registro, horas_hoy, ausencia):
 class PersonalTallerView(APIView):
     """Lista del personal de taller con su estado de hoy."""
 
-    permission_classes = [PermisoProduccion]
+    permission_classes = [PermisoPersonal]
 
     @extend_schema(operation_id="produccion_personal", responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
@@ -177,7 +188,7 @@ class PersonalTallerView(APIView):
 class PersonalDetalleView(APIView):
     """Horario, permisos e historial de días trabajados de una trabajadora."""
 
-    permission_classes = [PermisoProduccion]
+    permission_classes = [PermisoPersonal]
 
     @extend_schema(operation_id="produccion_personal_detalle", responses={200: OpenApiTypes.OBJECT})
     def get(self, request, pk):
@@ -297,7 +308,7 @@ class CapacidadAreasView(APIView):
     saben hacer algún proceso de esa área (una persona puede apoyar en varias).
     """
 
-    permission_classes = [PermisoProduccion]
+    permission_classes = [PermisoPersonal]
 
     @extend_schema(operation_id="produccion_capacidad_areas", responses={200: OpenApiTypes.OBJECT})
     def get(self, request):

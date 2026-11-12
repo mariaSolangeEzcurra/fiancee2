@@ -125,9 +125,11 @@ class InicioComercialView(APIView):
             codigo, etiqueta = estado_vestido(v, pasos)
             limite = v.fecha_limite_efectiva
             dias = (limite - hoy).days
+            no_llega = bool(v.fecha_fin_estimada and v.fecha_fin_estimada > limite)
             if codigo in ("SIN_INICIAR", "EN_PROCESO"):
                 en_taller += 1
-                if dias < 0:
+                # Mismo criterio que la jefa: pasó la fecha o el plan no llega.
+                if dias < 0 or no_llega:
                     atrasados += 1
             if codigo == "LISTO":
                 listos += 1
