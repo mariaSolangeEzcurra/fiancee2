@@ -9,6 +9,7 @@ import {
   CircleXIcon,
   FlameIcon,
   HourglassIcon,
+  InfoIcon,
   TriangleAlertIcon,
   UsersIcon,
 } from 'lucide-react';
@@ -79,6 +80,9 @@ export function SimulationResult({
   const v = VERDICT[result.status];
   const VerdictIcon = v.Icon;
   const margin = result.finish ? Math.round((result.delivery.getTime() - result.finish.getTime()) / 86_400_000) : null;
+  // Si lleva bordado, los días de sobra se cuentan hasta el día en que debe empezar.
+  const cushion = result.verdict !== 'NO_FACTIBLE' && result.realMarginDays !== undefined ? result.realMarginDays : margin;
+  const criteria = result.criteria ?? [];
   const canAccept = simulationIsDefinitive && !stale && result.verdict !== 'NO_FACTIBLE';
   const cause = result.cause;
   const CauseIcon = cause ? CAUSE_ICON[cause.type] : null;
@@ -114,32 +118,38 @@ export function SimulationResult({
           </div>
         </div>
 
-        <dl className="mt-5 grid grid-cols-3 gap-3">
+        <dl className="mt-5 grid grid-cols-3 gap-2 sm:gap-3">
           <Tile label="Entrega pedida" value={fmtDate(result.delivery)} />
           <Tile label="Estaría listo" value={result.finish ? fmtDate(result.finish) : '—'} />
           <Tile
-            label="Margen"
-            value={margin === null ? '—' : marginText(margin)}
-            tone={margin === null ? undefined : margin < 0 ? 'bad' : margin < 7 ? 'risk' : 'ok'}
+            label={result.verdict === 'NO_FACTIBLE' ? 'Atraso' : 'Días de sobra'}
+            value={cushion === null ? '—' : result.verdict === 'NO_FACTIBLE' ? marginText(cushion) : `${cushion} día${cushion === 1 ? '' : 's'}`}
+            tone={cushion === null ? undefined : cushion < 0 ? 'bad' : cushion < 7 ? 'risk' : 'ok'}
           />
         </dl>
       </section>
 
-      {/* 2. Por qué / condiciones */}
-      {result.status === 'bad' && (cause || result.alternativeDate) && (
-        <section className="rounded-2xl border border-line bg-paper p-5">
-          {cause && CauseIcon && (
-            <div className="flex gap-3">
-              <CauseIcon className="mt-0.5 h-5 w-5 shrink-0 text-bad" aria-hidden="true" />
-              <div>
-                <p className="font-semibold text-cocoa">{cause.title}</p>
-                <p className="mt-1 text-sm leading-relaxed text-cocoa-muted">{cause.detail}</p>
-              </div>
+      {/* 2. ¿Por qué este resultado? */}
+      {criteria.length > 0 ? (
+        <WhySection title={result.verdictTitle ?? v.title} criteria={criteria} />
+      ) : (
+        cause &&
+        CauseIcon && (
+          <section className="flex gap-3 rounded-2xl border border-line bg-paper p-5">
+            <CauseIcon className="mt-0.5 h-5 w-5 shrink-0 text-bad" aria-hidden="true" />
+            <div>
+              <p className="font-semibold text-cocoa">{cause.title}</p>
+              <p className="mt-1 text-sm leading-relaxed text-cocoa-muted">{cause.detail}</p>
             </div>
-          )}
+          </section>
+        )
+      )}
 
+      {/* 2b. Fecha alternativa */}
+      {result.status === 'bad' && (result.alternativeDate || extraReasons.length > 0) && (
+        <section className="rounded-2xl border border-line bg-paper p-5">
           {result.alternativeDate && (
-            <div className={cn('flex flex-col gap-3 rounded-xl bg-cream px-4 py-3 sm:flex-row sm:items-center sm:justify-between', cause && 'mt-4')}>
+            <div className="flex flex-col gap-3 rounded-xl bg-cream px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <CalendarCheckIcon className="h-5 w-5 shrink-0 text-gold" aria-hidden="true" />
                 <div>
@@ -170,7 +180,7 @@ export function SimulationResult({
         </section>
       )}
 
-      {result.status === 'risk' && (result.conditions ?? []).length > 0 && (
+      {criteria.length === 0 && result.status === 'risk' && (result.conditions ?? []).length > 0 && (
         <section className="rounded-2xl border border-line bg-paper p-5">
           <p className="font-semibold text-cocoa">A tener en cuenta</p>
           <ul className="mt-2 space-y-1.5">
@@ -287,11 +297,11 @@ export function SimulationResult({
 
 function Tile({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'risk' | 'bad' }) {
   return (
-    <div className="rounded-xl bg-paper/80 px-3 py-2.5">
+    <div className="min-w-0 rounded-xl bg-paper/80 px-2.5 py-2.5 sm:px-3">
       <dt className="text-[11px] text-cocoa-muted">{label}</dt>
       <dd
         className={cn(
-          'mt-0.5 text-base font-semibold tabular',
+          'mt-0.5 text-[13px] font-semibold tabular sm:text-base',
           tone === 'bad' ? 'text-red-700' : tone === 'risk' ? 'text-amber-800' : tone === 'ok' ? 'text-green-800' : 'text-cocoa'
         )}
       >
@@ -356,5 +366,72 @@ function AreaList({ areas }: { areas: AreaNeed[] }) {
         })}
       </ul>
     </div>
+  );
+}
+const CRITERIA_STYLE = {
+  ok: { Icon: CircleCheckIcon, icon: 'text-green-700', label: 'Bien', pill: 'bg-green-50 text-green-800' },
+  risk: { Icon: TriangleAlertIcon, icon: 'text-amber-600', label: 'Ojo', pill: 'bg-amber-50 text-amber-800' },
+  bad: { Icon: CircleXIcon, icon: 'text-red-600', label: 'No cumple', pill: 'bg-red-50 text-red-700' },
+  info: { Icon: InfoIcon, icon: 'text-cocoa-muted', label: 'Dato', pill: 'bg-cream text-cocoa-muted' },
+} as const;
+
+/** Lista de lo que el sistema revisó y cómo salió cada cosa. */
+function WhySection({
+  title,
+  criteria,
+}: {
+  title: string;
+  criteria: NonNullable<Result['criteria']>;
+}) {
+  // Primero lo que falla, luego lo que hay que vigilar, luego lo que está bien.
+  const order = { bad: 0, risk: 1, ok: 2, info: 3 } as const;
+  const sorted = [...criteria].sort((a, b) => order[a.tone] - order[b.tone]);
+
+  return (
+    <section className="rounded-2xl border border-line bg-paper">
+      <div className="border-b border-line px-5 py-3">
+        <p className="text-sm font-semibold text-cocoa">¿Por qué sale «{title}»?</p>
+        <p className="mt-0.5 text-xs text-cocoa-muted">Esto es lo que revisó el sistema con el personal y los trabajos que ya tiene el taller.</p>
+      </div>
+      <ul className="divide-y divide-line">
+        {sorted.map((c) => {
+          const st = CRITERIA_STYLE[c.tone];
+          return (
+            <li key={c.key} className="flex gap-3 px-5 py-3">
+              <st.Icon className={cn('mt-0.5 h-5 w-5 shrink-0', st.icon)} aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-cocoa">{c.title}</p>
+                  <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide', st.pill)}>{st.label}</span>
+                </div>
+                {(c.lines ?? []).length > 0 && (
+                  <ul className="mt-1.5 space-y-1">
+                    {(c.lines ?? []).map((l) => {
+                      const [what, result] = l.split(' → ');
+                      const short = result?.startsWith('le faltan') || result?.startsWith('pasa');
+                      return (
+                        <li key={l} className="flex flex-col gap-0.5 rounded-lg bg-ivory px-3 py-1.5 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                          <span className="text-cocoa">{what}</span>
+                          {result && (
+                            <span className={cn('shrink-0 text-xs font-semibold', short ? 'text-red-700' : 'text-green-800')}>{result}</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                <p className={cn('text-sm leading-relaxed text-cocoa-muted', (c.lines ?? []).length > 0 ? 'mt-1.5 text-xs' : 'mt-0.5')}>{c.detail}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-b-2xl bg-cream/60 px-5 py-2.5 text-[11px] text-cocoa-muted">
+        <span className="font-semibold text-cocoa">Cómo decide:</span>
+        <span><b className="text-green-800">Factible</b> = todo en verde</span>
+        <span><b className="text-amber-800">Con condiciones</b> = llega, pero hay algo en amarillo</span>
+        <span><b className="text-red-700">No factible</b> = no llega a la fecha</span>
+      </div>
+    </section>
   );
 }

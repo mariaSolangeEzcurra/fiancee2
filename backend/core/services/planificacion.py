@@ -426,7 +426,7 @@ def evaluar_temporada_alta(capacidad, desde, hasta):
         "factor": float(factor) if activa else 1.0,
         "motivo": (
             "Temporada alta: " + " y ".join(motivos)
-            + f". Se suma una holgura del {round((float(factor) - 1) * 100)} % a las horas de trabajo."
+            + f". Por eso se calcula un {round((float(factor) - 1) * 100)} % más de horas de trabajo, por si acaso."
         ) if activa else "",
     }
 

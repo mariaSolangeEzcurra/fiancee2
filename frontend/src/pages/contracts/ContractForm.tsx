@@ -1030,7 +1030,7 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
           {step === 2 && (
           <Card
             title="Vestidos e ítems"
-            subtitle="Cada vestido con taller reserva horas automáticamente. Usa «Vestido en tienda» para vestidos de stock que solo se modifican, y «Sin taller» para accesorios."
+            subtitle="Cada vestido con taller reserva horas automáticamente. Para un vestido de stock de la tienda, elige su modelo y en Taller pon «Tienda». Usa «Sin taller» para accesorios."
             right={<span className="rounded-full bg-champagne-soft px-3 py-1 text-xs font-semibold text-cocoa">{form.vestidos.length}</span>}
           >
             <div className="space-y-3">
@@ -1066,9 +1066,14 @@ export function ContractForm({ contractId, prefill, onBack, onSaved, viewOnly = 
                       <Field label="Tipo de vestido" className="sm:col-span-2">
                         <select className={inputCls} value={item.tipo_vestido ?? ''} disabled={locked} onChange={(e) => changeDress(item, e.target.value)}>
                           <option value="">— Accesorio / otro —</option>
-                          {catalog.map((d) => (
-                            <option key={d.id} value={d.id}>{d.nombre}</option>
-                          ))}
+                          {catalog
+                            .filter((d) => d.activo !== false || d.id === item.tipo_vestido)
+                            .map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.nombre}
+                                {d.activo === false ? ' (ya no se usa)' : ''}
+                              </option>
+                            ))}
                         </select>
                       </Field>
                       <Field label="Taller" className="sm:col-span-2">

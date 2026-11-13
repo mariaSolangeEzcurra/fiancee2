@@ -7,6 +7,7 @@ from core.gerencia_views import (
 )
 from core.notificaciones_views import LeerNotificacionView, LeerTodasView, NotificacionesView
 from core.simulador_views import SimuladorView
+from core.importacion.views import EsquemaView, HistorialView, ImportarView, PlantillaView, ResumenTIView
 
 from .views import (
     CapacidadProduccionView,
@@ -41,6 +42,11 @@ urlpatterns = [
     path("gerencia/metas/", MetasView.as_view()),
     path("gerencia/horas/", HorasPersonalView.as_view()),
     path("gerencia/indicadores/", IndicadoresView.as_view()),
+    path("ti/resumen/", ResumenTIView.as_view(), name="ti-resumen"),
+    path("ti/esquema/", EsquemaView.as_view(), name="ti-esquema"),
+    path("ti/plantilla/", PlantillaView.as_view(), name="ti-plantilla"),
+    path("ti/importar/", ImportarView.as_view(), name="ti-importar"),
+    path("ti/historial/", HistorialView.as_view(), name="ti-historial"),
     path("notificaciones/", NotificacionesView.as_view(), name="notificaciones"),
     path("notificaciones/leer-todas/", LeerTodasView.as_view(), name="notificaciones-leer-todas"),
     path("notificaciones/<int:pk>/leer/", LeerNotificacionView.as_view(), name="notificacion-leer"),

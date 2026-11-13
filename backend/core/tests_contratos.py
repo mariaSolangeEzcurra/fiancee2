@@ -287,13 +287,25 @@ class ContratosTestCase(BaseContratos):
 class VestidoEnTiendaTestCase(BaseContratos):
     def setUp(self):
         super().setUp()
-        self.tienda = TipoVestido.objects.get(nombre="Vestido en tienda")
+        # Vestido de tienda: se elige el modelo y su taller "Tienda".
+        self.tienda = TipoVestido.objects.get(nombre="Sirena")
         self.ruta_t = RutaProduccion.objects.get(tipo_vestido=self.tienda, taller="T")
         self.plantillas = {p.operacion.nombre: p for p in self.ruta_t.operaciones.select_related("operacion")}
 
     def test_ruta_tienda_sin_compra(self):
         self.assertNotIn("compra materiales", self.plantillas)
         self.assertIn("entalle", self.plantillas)
+
+    def test_tienda_toma_horas_del_modelo(self):
+        def horas(taller, nombre):
+            return RutaProduccion.objects.get(tipo_vestido=self.tienda, taller=taller).operaciones.get(
+                operacion__nombre=nombre).horas_estimadas
+        self.assertEqual(self.plantillas["bordado"].horas_estimadas, horas("C", "bordado"))
+        self.assertEqual(self.plantillas["confección"].horas_estimadas, horas("A", "confección"))
+        # El genérico ya no se ofrece para contratos nuevos.
+        generico = TipoVestido.objects.filter(nombre="Vestido en tienda").first()
+        if generico:
+            self.assertFalse(generico.activo)
 
     def test_tiempos_ajustados_por_vestido(self):
         procesos = [
@@ -405,8 +417,8 @@ class ProduccionTestCase(BaseContratos):
         self.assertEqual(g.post(f"{self.P}{self.v1['id']}/completar-paso/").status_code, 403)
 
     def test_pasos_respetan_tiempos_ajustados(self):
-        tienda = TipoVestido.objects.get(nombre="Vestido en tienda")
-        ruta = RutaProduccion.objects.get(tipo_vestido=tienda)
+        tienda = TipoVestido.objects.get(nombre="Sirena")
+        ruta = RutaProduccion.objects.get(tipo_vestido=tienda, taller="T")
         lav = ruta.operaciones.get(operacion__nombre="lavandería")
         ent = ruta.operaciones.get(operacion__nombre="entalle")
         c = self.crear(adelantos=[], datos_cliente={"nombre": "X", "documento": "999"}, vestidos=[
@@ -752,6 +764,11 @@ class SimuladorTestCase(BaseContratos):
         self.assertEqual(r.status_code, 400)
         r = self.api.post(self.S, {"fecha_entrega": str(self.hoy + timedelta(days=50)),
                                    "vestidos": [{"tipo_vestido": self.mini.id, "taller": "T"}]}, format="json")
+        # Ahora cada modelo tiene su ruta Tienda.
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        generico, _ = TipoVestido.objects.get_or_create(nombre="Vestido en tienda", defaults={"activo": False})
+        r = self.api.post(self.S, {"fecha_entrega": str(self.hoy + timedelta(days=50)),
+                                   "vestidos": [{"tipo_vestido": generico.id, "taller": "T"}]}, format="json")
         self.assertEqual(r.status_code, 400)
         taller = APIClient(); taller.force_authenticate(self.user_taller)
         self.assertEqual(taller.post(self.S, {}, format="json").status_code, 403)

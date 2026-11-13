@@ -9,6 +9,7 @@ class Usuario(AbstractUser):
         JEFA_TALLER = "jefa_taller", "Jefa de taller"
         TALLER = "taller", "Taller"
         GERENCIA = "gerencia", "Gerencia"
+        TI = "ti", "TI (sistemas)"
 
     rol = models.CharField(
         max_length=20,

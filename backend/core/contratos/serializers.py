@@ -333,8 +333,10 @@ class ProcesoInputSerializer(serializers.Serializer):
 
 class ItemContratoSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False, allow_null=True)
+    # Incluye inactivos para no romper vestidos ya guardados (p. ej. el
+    # antiguo "Vestido en tienda"); los nuevos solo pueden usar activos.
     tipo_vestido = serializers.PrimaryKeyRelatedField(
-        queryset=TipoVestido.objects.filter(activo=True),
+        queryset=TipoVestido.objects.all(),
         required=False,
         allow_null=True,
     )
@@ -367,6 +369,11 @@ class ItemContratoSerializer(serializers.Serializer):
     observaciones = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, attrs):
+        tipo = attrs.get("tipo_vestido")
+        if tipo is not None and not tipo.activo and not attrs.get("id"):
+            raise serializers.ValidationError(
+                {"tipo_vestido": f"«{tipo.nombre}» ya no se usa. Elige el modelo del vestido."}
+            )
         if attrs.get("taller") and not attrs.get("tipo_vestido"):
             raise serializers.ValidationError(
                 {"tipo_vestido": "Selecciona el tipo de vestido para enviarlo al taller."}

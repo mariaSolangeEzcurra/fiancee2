@@ -15,7 +15,9 @@ import {
   TrendingUpIcon,
   BellIcon,
   UsersIcon,
-  WalletIcon } from
+  WalletIcon,
+  UploadCloudIcon,
+  HistoryIcon } from
 'lucide-react';
 import { Role } from '../types';
 
@@ -59,6 +61,12 @@ export const navigation: Record<Role, NavItem[]> = {
   { label: 'Horas', path: '/gerencia/horas', icon: ClockIcon },
   { label: 'Indicadores', path: '/gerencia/kpi', icon: TrendingUpIcon },
   { label: 'Notificaciones', path: '/gerencia/notificaciones', icon: BellIcon },
-  { label: 'Configuración', path: '/gerencia/configuracion', icon: SettingsIcon }]
+  { label: 'Configuración', path: '/gerencia/configuracion', icon: SettingsIcon }],
+
+  ti: [
+  { label: 'Inicio', path: '/ti', icon: LayoutDashboardIcon, end: true },
+  { label: 'Importar datos', path: '/ti/importar', icon: UploadCloudIcon },
+  { label: 'Historial', path: '/ti/historial', icon: HistoryIcon },
+  { label: 'Notificaciones', path: '/ti/notificaciones', icon: BellIcon }]
 
 };

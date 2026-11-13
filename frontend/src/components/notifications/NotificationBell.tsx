@@ -14,6 +14,7 @@ export const NOTIFICATIONS_PATH: Record<Role, string> = {
   jefa: '/taller/notificaciones',
   trabajador: '/trabajador/notificaciones',
   gerencia: '/gerencia/notificaciones',
+  ti: '/ti/notificaciones',
 };
 
 /** A dónde lleva una notificación al hacerle clic. */

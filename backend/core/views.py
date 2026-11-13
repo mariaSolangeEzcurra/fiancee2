@@ -101,8 +101,11 @@ class CatalogoSimuladorView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        tipos = TipoVestido.objects.all()
+        if request.query_params.get("incluir_inactivos") not in ("1", "true"):
+            tipos = tipos.filter(activo=True)
         vestidos = (
-            TipoVestido.objects.filter(activo=True)
+            tipos
             .order_by("nombre", "id")
             .prefetch_related(
                 Prefetch(
@@ -188,6 +191,7 @@ class CatalogoSimuladorView(APIView):
                 "id": vestido.id,
                 "nombre": vestido.nombre,
                 "descripcion": vestido.descripcion,
+                "activo": vestido.activo,
                 "rutas": rutas_data,
             })
 

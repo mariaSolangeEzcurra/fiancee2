@@ -1335,63 +1335,78 @@ DATOS_TIEMPOS = {
 
 
 # Vestido que ya está hecho en tienda: solo pasa por modificaciones.
-# Mismos procesos que el Taller C, sin compra de materiales.
-# Las horas son referenciales y se ajustan por vestido en el contrato.
+# Cada modelo (Sirena, Princesa…) tiene su ruta "Tienda" (T): los mismos
+# procesos que el Taller C pero sin compra de materiales. Las horas de
+# CONFECCIÓN salen del Taller A de ese modelo y las de BORDADO del Taller C
+# de ese modelo; el resto son referenciales y se ajustan en el contrato.
+# El tipo genérico "Vestido en tienda" se deja inactivo (solo para contratos
+# antiguos que ya lo usan).
 VESTIDO_EN_TIENDA = "Vestido en tienda"
 
 TIEMPOS_VESTIDO_EN_TIENDA = {
+    "confección": None,   # horas del Taller A del modelo
     "prueba 1": 2,
     "entalle": 8,
     "prueba 2": 2,
     "acabados": 8,
     "basta": 4,
-    "bordado": 0,
+    "bordado": None,      # horas del Taller C del modelo
     "lavandería": 24,
     "prueba 3": 2,
 }
+# De qué taller del mismo modelo salen las horas marcadas con None.
+ORIGEN_HORAS_TIENDA = {"confección": "A", "bordado": "C"}
 
 
-def cargar_vestido_en_tienda():
-    """Crea el tipo 'Vestido en tienda' con su ruta T. No pisa ediciones."""
+def cargar_rutas_tienda():
+    """Crea la ruta Tienda de cada modelo. No pisa horas ya editadas."""
     with transaction.atomic():
-        vestido, _ = TipoVestido.objects.get_or_create(
-            nombre=VESTIDO_EN_TIENDA,
-            defaults={
-                "descripcion": (
-                    "Vestido de stock de la tienda que solo pasa por "
-                    "modificaciones (sin compra de materiales)."
-                )
-            },
-        )
-        ruta, _ = RutaProduccion.objects.get_or_create(
-            tipo_vestido=vestido,
-            taller=RutaProduccion.Tipo.TIENDA,
-            defaults={"descripcion": "Modificación de vestido en stock"},
-        )
-        for orden, (nombre, horas) in enumerate(
-            TIEMPOS_VESTIDO_EN_TIENDA.items(), start=1
-        ):
-            operacion = Operacion.objects.filter(nombre__iexact=nombre).first()
-            if operacion is None:
+        for vestido in TipoVestido.objects.exclude(nombre=VESTIDO_EN_TIENDA):
+            if not vestido.rutas.filter(taller=RutaProduccion.Tipo.TALLER_C).exists():
                 continue
-            PlantillaOperacion.objects.get_or_create(
-                ruta=ruta,
-                operacion=operacion,
-                defaults={
-                    "orden": orden,
-                    "horas_estimadas": Decimal(str(horas)),
-                    # Mismo tipo de tiempo que el proceso en las demás rutas.
-                    "tipo_tiempo": (
-                        PlantillaOperacion.objects.filter(operacion=operacion)
-                        .exclude(ruta__taller=RutaProduccion.Tipo.TIENDA)
-                        .values_list("tipo_tiempo", flat=True)
-                        .first()
-                        or PlantillaOperacion.TipoTiempo.TRABAJO
-                    ),
-                    "obligatoria": nombre != "bordado",
-                    "activa": True,
-                },
+            ruta, _ = RutaProduccion.objects.get_or_create(
+                tipo_vestido=vestido,
+                taller=RutaProduccion.Tipo.TIENDA,
+                defaults={"descripcion": "Vestido de tienda: solo modificaciones"},
             )
+            orden = 0
+            for nombre, horas in TIEMPOS_VESTIDO_EN_TIENDA.items():
+                operacion = Operacion.objects.filter(nombre__iexact=nombre).first()
+                if operacion is None:
+                    continue
+                base = None
+                if nombre in ORIGEN_HORAS_TIENDA:
+                    base = PlantillaOperacion.objects.filter(
+                        ruta__tipo_vestido=vestido,
+                        ruta__taller=ORIGEN_HORAS_TIENDA[nombre],
+                        operacion=operacion,
+                    ).first()
+                    if base is None:
+                        continue
+                    horas = base.horas_estimadas
+                orden += 1
+                PlantillaOperacion.objects.get_or_create(
+                    ruta=ruta,
+                    operacion=operacion,
+                    defaults={
+                        "orden": orden,
+                        "horas_estimadas": Decimal(str(horas)),
+                        "tipo_tiempo": (
+                            PlantillaOperacion.objects.filter(operacion=operacion)
+                            .exclude(ruta__taller=RutaProduccion.Tipo.TIENDA)
+                            .values_list("tipo_tiempo", flat=True)
+                            .first()
+                            or PlantillaOperacion.TipoTiempo.TRABAJO
+                        ),
+                        "obligatoria": base.obligatoria if base else True,
+                        "activa": True,
+                    },
+                )
+        TipoVestido.objects.filter(nombre=VESTIDO_EN_TIENDA).update(activo=False)
+
+
+# Nombre anterior, por compatibilidad.
+cargar_vestido_en_tienda = cargar_rutas_tienda
 
 
 def cargar_catalogo_inicial():
@@ -1473,7 +1488,7 @@ def cargar_catalogo_inicial():
                     if creada:
                         plantilla.save()
 
-    cargar_vestido_en_tienda()
+    cargar_rutas_tienda()
 
 
 class ReservaOperacion(models.Model):
@@ -1804,3 +1819,29 @@ class SesionTrabajo(models.Model):
             f"{self.reserva.contrato.numero} - "
             f"{self.reserva.plantilla.operacion.nombre}"
         )
+
+
+class ImportacionDatos(models.Model):
+    """Historial de cargas de Excel hechas por el área de TI."""
+
+    class Estado(models.TextChoices):
+        IMPORTADO = "IMPORTADO", "Importado"
+        CON_ERRORES = "CON_ERRORES", "Con errores"
+
+    archivo = models.CharField(max_length=200)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="importaciones",
+    )
+    estado = models.CharField(max_length=12, choices=Estado.choices)
+    resumen = models.JSONField(default=dict, blank=True)
+    errores = models.JSONField(default=list, blank=True)
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-creado_en"]
+        verbose_name = "importación de datos"
+        verbose_name_plural = "importaciones de datos"
+
+    def __str__(self):
+        return f"{self.archivo} ({self.get_estado_display()})"

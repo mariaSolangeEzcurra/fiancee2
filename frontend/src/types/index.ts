@@ -1,5 +1,5 @@
 
-export type Role = 'fio' | 'jefa' | 'trabajador' | 'gerencia';
+export type Role = 'fio' | 'jefa' | 'trabajador' | 'gerencia' | 'ti';
 
 export type AreaId =
   | 'patronaje'
@@ -317,6 +317,7 @@ export interface SimulationResult {
   verdictTitle?: string;
   verdictMessage?: string;
   conditions?: string[];
+  criteria?: { key: string; tone: 'ok' | 'risk' | 'bad' | 'info'; title: string; detail: string; lines?: string[] }[];
   notes?: string[];
   warnings?: string[];
   realMarginDays?: number;

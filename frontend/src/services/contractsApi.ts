@@ -380,6 +380,8 @@ export interface CatalogoVestido {
   id: number;
   nombre: string;
   descripcion: string;
+  /** false = ya no se ofrece para vestidos nuevos (se mantiene en los antiguos). */
+  activo?: boolean;
   rutas: {
     id: number;
     taller: Taller;
@@ -524,7 +526,7 @@ export const contractsApi = {
     request<Cliente[]>(`${CONTRACTS}clientes/`, { query: { q } }),
 
   catalog: async (): Promise<CatalogoVestido[]> => {
-    const data = await request<{ vestidos: CatalogoVestido[] }>('/api/core/catalogo/');
+    const data = await request<{ vestidos: CatalogoVestido[] }>('/api/core/catalogo/', { query: { incluir_inactivos: '1' } });
     return data.vestidos;
   },
 };

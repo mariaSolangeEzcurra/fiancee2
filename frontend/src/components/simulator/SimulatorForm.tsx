@@ -114,9 +114,12 @@ export function SimulatorForm({
   };
 
   const handleWorkshop = (workshop: Workshop) => {
-    const nextTemplate = availableTemplates.find(
-      (template) => template.workshop === workshop
-    );
+    // Si el modelo elegido también existe en el otro taller, se mantiene.
+    const current = selectedTemplate?.backendDressId;
+    const nextTemplate =
+      availableTemplates.find(
+        (template) => template.workshop === workshop && current !== undefined && template.backendDressId === current
+      ) ?? availableTemplates.find((template) => template.workshop === workshop);
 
     onChange({
       workshop,
@@ -269,9 +272,9 @@ export function SimulatorForm({
 
         {input.workshop === 'Tienda' && (
           <p className="mt-3 rounded-xl bg-cream px-3 py-3 text-xs leading-relaxed text-cocoa">
-            Vestido que ya está hecho en tienda: solo pasa por modificaciones
-            (sin compra de materiales). Los tiempos de cada proceso se pueden
-            ajustar luego en el contrato.
+            Vestido que ya está hecho en tienda: elige su modelo. No hay compra
+            de materiales; las horas de confección y bordado son las de ese
+            modelo, y se pueden ajustar luego en el contrato.
           </p>
         )}
 

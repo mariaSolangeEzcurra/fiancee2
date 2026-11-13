@@ -34,6 +34,9 @@ import { Kpi } from './pages/gerencia/Kpi';
 import { GerenciaFinance } from './pages/gerencia/GerenciaFinance';
 import { GerenciaSettings } from './pages/gerencia/GerenciaSettings';
 import Trabajadoras from "./pages/gerencia/Trabajadoras";
+import { TiHome } from './pages/ti/TiHome';
+import { ImportData } from './pages/ti/ImportData';
+import { ImportHistory } from './pages/ti/ImportHistory';
 
 export function App() {
   return (
@@ -132,6 +135,21 @@ export function App() {
               <Route path="kpi" element={<Kpi />} />
               <Route path="notificaciones" element={<Notifications role="gerencia" />} />
               <Route path="configuracion" element={<GerenciaSettings />} />
+            </Route>
+
+            {/* TI */}
+            <Route
+              path="/ti"
+              element={
+                <ProtectedRoute allowedRoles={['ti']}>
+                  <AppShell role="ti" />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<TiHome />} />
+              <Route path="importar" element={<ImportData />} />
+              <Route path="historial" element={<ImportHistory />} />
+              <Route path="notificaciones" element={<Notifications role="ti" />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

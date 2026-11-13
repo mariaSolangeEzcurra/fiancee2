@@ -64,6 +64,8 @@ export interface SimulacionRespuesta {
   titulo: string;
   mensaje: string;
   condiciones: string[];
+  /** Explicación paso a paso del veredicto. */
+  criterios?: { clave: string; estado: 'ok' | 'risk' | 'bad' | 'info'; titulo: string; detalle: string; lineas?: string[] }[];
   motivos: string[];
   advertencias: string[];
   notas: string[];
@@ -216,6 +218,7 @@ export function toSimulationResult(r: SimulacionRespuesta): SimulationResult {
     verdictTitle: r.titulo,
     verdictMessage: r.mensaje,
     conditions: r.condiciones,
+    criteria: (r.criterios ?? []).map((c) => ({ key: c.clave, tone: c.estado, title: c.titulo, detail: c.detalle, lines: c.lineas ?? [] })),
     notes: r.notas,
     warnings: r.advertencias,
     realMarginDays: r.margen_real_dias,

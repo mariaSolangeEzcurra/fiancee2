@@ -7,7 +7,8 @@ export type UserRole =
   | 'comercial'
   | 'jefa_taller'
   | 'taller'
-  | 'gerencia';
+  | 'gerencia'
+  | 'ti';
 
 export interface AuthUser {
   id: number;
@@ -203,6 +204,7 @@ export function roleHome(rol: UserRole): string {
     jefa_taller: '/taller',
     taller: '/trabajador',
     gerencia: '/gerencia',
+    ti: '/ti',
   };
 
   return routes[rol];
@@ -226,6 +228,7 @@ export function getStoredUser(): AuthUser | null {
       'jefa_taller',
       'taller',
       'gerencia',
+      'ti',
     ];
 
     if (

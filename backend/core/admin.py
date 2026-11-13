@@ -56,3 +56,13 @@ admin.site.register([
     MovimientoFinanciero,
     CostoOperativo,
 ])
+
+
+from .models import ImportacionDatos  # noqa: E402
+
+
+@admin.register(ImportacionDatos)
+class ImportacionDatosAdmin(admin.ModelAdmin):
+    list_display = ("archivo", "estado", "usuario", "creado_en")
+    list_filter = ("estado",)
+    readonly_fields = ("archivo", "estado", "usuario", "resumen", "errores", "creado_en")
