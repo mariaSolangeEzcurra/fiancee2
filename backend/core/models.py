@@ -36,6 +36,14 @@ class Trabajadora(models.Model):
 
     observaciones = models.TextField(blank=True)
 
+    # Para saber cuánto cuesta el personal (gerencia → indicadores).
+    sueldo_mensual = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Sueldo bruto mensual en soles (incluye lo que pague el taller por ella).",
+    )
+    fecha_ingreso = models.DateField(null=True, blank=True)
+
     usuario = models.OneToOneField(
     settings.AUTH_USER_MODEL,
     on_delete=models.SET_NULL,
@@ -588,6 +596,8 @@ class VestidoContrato(models.Model):
     )
 
     observaciones = models.TextField(blank=True)
+    # Ficha técnica en texto: medidas, tela, detalles de confección.
+    ficha_tecnica = models.TextField(blank=True)
 
     estado = models.CharField(
         max_length=15,
@@ -701,6 +711,8 @@ class PasoVestido(models.Model):
     es_entrega = models.BooleanField(default=False)
     # Paso agregado por la jefa (prueba extra, ajuste, etc.).
     es_adicional = models.BooleanField(default=False)
+    # Proceso agregado para corregir un error (arreglo / retrabajo).
+    es_retrabajo = models.BooleanField(default=False)
     tipo_tiempo = models.CharField(
         max_length=10,
         choices=PlantillaOperacion.TipoTiempo.choices,
@@ -863,6 +875,7 @@ class Notificacion(models.Model):
         RECORDATORIO = "RECORDATORIO", "Recordatorio"
         ATRASO = "ATRASO", "Atraso"
         JORNADA = "JORNADA", "Jornada"
+        GASTO = "GASTO", "Gasto"
 
     usuario = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -923,12 +936,27 @@ class CategoriaFinanciera(models.Model):
         return f"{self.nombre} ({self.tipo})"
 
 
+# Prefijo del código de recibo según desde dónde se registró el pago.
+PREFIJO_RECIBO = {
+    "TALLER": "EFITA",
+    "COMERCIAL": "EFICO",
+    "GERENCIA": "EFIGE",
+    "IMPORTACION": "EFIIM",
+}
+
+
 class Pago(models.Model):
     class Metodo(models.TextChoices):
         EFECTIVO = "EFECTIVO", "Efectivo"
         TRANSFERENCIA = "TRANSFERENCIA", "Transferencia"
         TARJETA = "TARJETA", "Tarjeta"
         OTRO = "OTRO", "Otro"
+
+    class Origen(models.TextChoices):
+        COMERCIAL = "COMERCIAL", "Comercial (tienda)"
+        TALLER = "TALLER", "Taller"
+        GERENCIA = "GERENCIA", "Gerencia"
+        IMPORTACION = "IMPORTACION", "Carga de datos (TI)"
 
     contrato = models.ForeignKey(
         Contrato,
@@ -970,6 +998,31 @@ class Pago(models.Model):
         blank=True,
     )
 
+    # Desde dónde se registró y código del recibo (EFITA-000001…).
+    origen = models.CharField(max_length=12, choices=Origen.choices, default=Origen.COMERCIAL)
+    codigo = models.CharField(max_length=20, blank=True, db_index=True)
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    @staticmethod
+    def origen_de(usuario):
+        rol = getattr(usuario, "rol", "") if usuario else ""
+        return {
+            "jefa_taller": Pago.Origen.TALLER,
+            "gerencia": Pago.Origen.GERENCIA,
+            "ti": Pago.Origen.IMPORTACION,
+        }.get(rol, Pago.Origen.COMERCIAL)
+
+    @staticmethod
+    def siguiente_codigo(origen):
+        prefijo = PREFIJO_RECIBO.get(origen, "EFI")
+        ultimo = 0
+        for c in Pago.objects.filter(codigo__startswith=f"{prefijo}-").values_list("codigo", flat=True):
+            try:
+                ultimo = max(ultimo, int(c.split("-")[-1]))
+            except ValueError:
+                continue
+        return f"{prefijo}-{ultimo + 1:06d}"
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -985,6 +1038,8 @@ class Pago(models.Model):
         Si no está confirmado, no se contabiliza como ingreso.
         """
         with transaction.atomic():
+            if not self.codigo:
+                self.codigo = Pago.siguiente_codigo(self.origen)
             super().save(*args, **kwargs)
 
             if self.confirmado:
@@ -1139,6 +1194,13 @@ class Gasto(models.Model):
         PAGADO = "PAGADO", "Pagado"
         PENDIENTE = "PENDIENTE", "Por pagar"
 
+    class Area(models.TextChoices):
+        TIENDA = "TIENDA", "Comercial (tienda)"
+        TALLER = "TALLER", "Taller"
+        GERENCIA = "GERENCIA", "Gerencia"
+
+    # Desde dónde se registró: cada área ve solo lo suyo; gerencia ve todo.
+    area = models.CharField(max_length=10, choices=Area.choices, default=Area.GERENCIA, db_index=True)
     fecha = models.DateField(default=timezone.localdate)
     concepto = models.CharField(max_length=200)
     categoria = models.ForeignKey(CategoriaFinanciera, on_delete=models.PROTECT, related_name="gastos")
@@ -1154,6 +1216,8 @@ class Gasto(models.Model):
     )
     mes_fijo = models.DateField(null=True, blank=True)
     observaciones = models.TextField(blank=True)
+    # Foto o PDF del comprobante (boleta, factura, ticket).
+    archivo = models.FileField(upload_to="gastos/%Y/%m/", blank=True)
     registrado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="gastos_registrados"
     )
@@ -1211,6 +1275,11 @@ class ConfiguracionNegocio(models.Model):
         validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
     )
     nombre_negocio = models.CharField(max_length=120, default="Fiancée")
+    # % de impuesto a la renta sobre la utilidad operativa (estado de resultados).
+    tasa_impuesto = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("10.00"),
+        validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
+    )
     actualizado_en = models.DateTimeField(auto_now=True)
 
     @classmethod
@@ -1845,3 +1914,27 @@ class ImportacionDatos(models.Model):
 
     def __str__(self):
         return f"{self.archivo} ({self.get_estado_display()})"
+
+
+class ArchivoVestido(models.Model):
+    """Ficha técnica o foto de referencia de un vestido."""
+
+    class Tipo(models.TextChoices):
+        FICHA = "FICHA", "Ficha técnica"
+        REFERENCIA = "REFERENCIA", "Referencia"
+
+    vestido = models.ForeignKey(VestidoContrato, on_delete=models.CASCADE, related_name="archivos")
+    tipo = models.CharField(max_length=10, choices=Tipo.choices, default=Tipo.REFERENCIA)
+    archivo = models.FileField(upload_to="fichas/%Y/%m/")
+    nombre = models.CharField(max_length=200, blank=True)
+    descripcion = models.CharField(max_length=300, blank=True)
+    subido_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["tipo", "creado_en", "id"]
+
+    def __str__(self):
+        return f"{self.vestido.codigo} · {self.get_tipo_display()}"

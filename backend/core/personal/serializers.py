@@ -145,6 +145,11 @@ class TrabajadoraSerializer(serializers.ModelSerializer):
         trim_whitespace=False,
     )
 
+    def _es_gerencia(self):
+        req = self.context.get("request")
+        u = getattr(req, "user", None)
+        return bool(u and (u.is_superuser or getattr(u, "rol", None) == "gerencia"))
+
     class Meta:
         model = Trabajadora
         fields = [
@@ -154,6 +159,8 @@ class TrabajadoraSerializer(serializers.ModelSerializer):
             "area_nombre",
             "activa",
             "observaciones",
+            "sueldo_mensual",
+            "fecha_ingreso",
             "habilidades",
             "habilidades_detalle",
             "horarios",
@@ -173,6 +180,8 @@ class TrabajadoraSerializer(serializers.ModelSerializer):
 
         data["username"] = usuario.username if usuario else None
         data["email"] = usuario.email if usuario else None
+        if not self._es_gerencia():
+            data.pop("sueldo_mensual", None)  # el sueldo solo lo ve gerencia
 
         return data
 
@@ -255,6 +264,8 @@ class TrabajadoraSerializer(serializers.ModelSerializer):
                 )
             })
 
+        if not self._es_gerencia():
+            attrs.pop("sueldo_mensual", None)
         return attrs
 
     @transaction.atomic

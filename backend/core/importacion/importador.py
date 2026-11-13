@@ -362,6 +362,10 @@ def importar_personal(filas, res, usuario):
             t.activa = True if r.get("activa") is None else r["activa"]
             if r.get("observaciones"):
                 t.observaciones = r["observaciones"]
+            if r.get("sueldo_mensual") is not None:
+                t.sueldo_mensual = r["sueldo_mensual"]
+            if r.get("fecha_ingreso"):
+                t.fecha_ingreso = r["fecha_ingreso"]
             t.save()
             if habilidades is not None:
                 t.habilidades.set(habilidades)
@@ -586,6 +590,7 @@ def importar_pagos(filas, res, usuario):
             orden_adelanto=orden,
             confirmado=True,
             registrado_por=usuario,
+            origen=Pago.Origen.IMPORTACION,
         )
         res.contar(hoja, "nuevos")
 

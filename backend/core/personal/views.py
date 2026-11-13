@@ -53,6 +53,17 @@ class EsGerencia(BasePermission):
         )
 
 
+class GestionaPersonal(EsGerencia):
+    """Gerencia y la jefa de taller pueden agregar y gestionar al personal."""
+
+    message = "Solo gerencia y la jefa de taller pueden gestionar el personal."
+
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) or (
+            request.user.is_authenticated and getattr(request.user, "rol", None) == "jefa_taller"
+        )
+
+
 class TrabajadoraViewSet(viewsets.ModelViewSet):
     """
     CRUD de personal:
@@ -63,7 +74,7 @@ class TrabajadoraViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = TrabajadoraSerializer
-    permission_classes = [IsAuthenticated, EsGerencia]
+    permission_classes = [IsAuthenticated, GestionaPersonal]
 
     queryset = Trabajadora.objects.prefetch_related(
         "habilidades",
@@ -380,7 +391,7 @@ class AusenciaViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = AusenciaSerializer
-    permission_classes = [IsAuthenticated, EsGerencia]
+    permission_classes = [IsAuthenticated, GestionaPersonal]
 
     queryset = AusenciaTrabajadora.objects.select_related(
         "trabajadora"
@@ -408,7 +419,7 @@ class OperacionViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = OperacionSerializer
-    permission_classes = [IsAuthenticated, EsGerencia]
+    permission_classes = [IsAuthenticated, GestionaPersonal]
 
     queryset = Operacion.objects.all().order_by(
         "area_responsable", "nombre"

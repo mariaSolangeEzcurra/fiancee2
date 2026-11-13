@@ -184,6 +184,8 @@ HOJAS = [
                         ejemplo="8" if i < 5 else ("4" if i == 5 else "0"), ancho=10)
                 for i, d in enumerate(DIAS)
             ],
+            Columna("Sueldo mensual (S/)", "sueldo_mensual", tipo="numero", ayuda="Solo lo ve gerencia. Sirve para calcular la rentabilidad", ejemplo="1300", ancho=14, alias=["sueldo"]),
+            Columna("Fecha de ingreso", "fecha_ingreso", tipo="fecha", ayuda="Formato dd/mm/aaaa", ejemplo="01/03/2025", ancho=14),
             Columna("Observaciones", "observaciones", ancho=30),
         ],
         icono="staff",

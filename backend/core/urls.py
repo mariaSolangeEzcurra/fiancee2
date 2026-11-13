@@ -7,6 +7,17 @@ from core.gerencia_views import (
 )
 from core.notificaciones_views import LeerNotificacionView, LeerTodasView, NotificacionesView
 from core.simulador_views import SimuladorView
+from core.gerencia_analisis import RentabilidadView, TiemposPersonalView
+from core.estado_resultados import EstadoResultadosView
+from core.operaciones_views import (
+    ArchivosVestidoView,
+    ArchivoVestidoView,
+    CalendarioView,
+    ContratoPagosView,
+    FichaTecnicaView,
+    GastosAreaView,
+)
+from core.gerencia_dashboard import CapacidadDashboardView, DashboardView, FinanzasDashboardView, ReporteView
 from core.importacion.views import EsquemaView, HistorialView, ImportarView, PlantillaView, ResumenTIView
 
 from .views import (
@@ -42,6 +53,19 @@ urlpatterns = [
     path("gerencia/metas/", MetasView.as_view()),
     path("gerencia/horas/", HorasPersonalView.as_view()),
     path("gerencia/indicadores/", IndicadoresView.as_view()),
+    path("gerencia/indicadores/rentabilidad/", RentabilidadView.as_view()),
+    path("gerencia/dashboard/", DashboardView.as_view()),
+    path("contratos/<int:pk>/pagos/", ContratoPagosView.as_view()),
+    path("vestidos/<int:pk>/archivos/", ArchivosVestidoView.as_view()),
+    path("vestidos/<int:pk>/archivos/<int:aid>/", ArchivoVestidoView.as_view()),
+    path("vestidos/<int:pk>/ficha/", FichaTecnicaView.as_view()),
+    path("gastos-area/", GastosAreaView.as_view()),
+    path("calendario/", CalendarioView.as_view()),
+    path("gerencia/estado-resultados/", EstadoResultadosView.as_view()),
+    path("gerencia/dashboard/capacidad/", CapacidadDashboardView.as_view()),
+    path("gerencia/dashboard/finanzas/", FinanzasDashboardView.as_view()),
+    path("gerencia/dashboard/reporte/", ReporteView.as_view()),
+    path("gerencia/indicadores/personal/", TiemposPersonalView.as_view()),
     path("ti/resumen/", ResumenTIView.as_view(), name="ti-resumen"),
     path("ti/esquema/", EsquemaView.as_view(), name="ti-esquema"),
     path("ti/plantilla/", PlantillaView.as_view(), name="ti-plantilla"),

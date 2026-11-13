@@ -489,7 +489,11 @@ class GerenciaGestionaPersonal(Auditoria):
         self.assertEqual(r.status_code, 200)
         # Comercial y jefa no
         self.assertEqual(self.api.get("/api/gerencia/personal/trabajadoras/").status_code, 403)
-        self.assertEqual(self.jef.get("/api/gerencia/personal/trabajadoras/").status_code, 403)
+        # La jefa de taller también gestiona al personal, pero no ve sueldos.
+        r = self.jef.get("/api/gerencia/personal/trabajadoras/")
+        self.assertEqual(r.status_code, 200)
+        filas = r.data if isinstance(r.data, list) else r.data.get("results", [])
+        self.assertTrue(all("sueldo_mensual" not in x for x in filas))
 
 
 class DiaLibre(Auditoria):

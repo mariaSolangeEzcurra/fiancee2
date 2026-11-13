@@ -188,6 +188,7 @@ def serializar_vestido(vestido, request=None, elegibles=None):
             "timeType": paso.tipo_tiempo,
             "isDelivery": paso.es_entrega,
             "isExtra": paso.es_adicional,
+            "isRework": paso.es_retrabajo,
             "status": paso.estado,
             "estHours": float(paso.horas_estimadas),
             "workedHours": round(trabajadas, 2),
@@ -252,7 +253,9 @@ def serializar_vestido(vestido, request=None, elegibles=None):
                 "concept": p.concepto, "reference": p.referencia, "notes": p.observaciones,
                 "number": p.orden_adelanto,
                 "dressCode": p.vestido.codigo if p.vestido_id else None,
-                "fromWorkshop": bool(p.vestido_id),
+                "fromWorkshop": p.origen == "TALLER",
+                "code": p.codigo, "origin": p.get_origen_display(), "by": _usuario(p.registrado_por),
+                "createdAt": p.creado_en,
             }
             for p in sorted(pagos_contrato, key=lambda p: (p.orden_adelanto or 999, p.fecha, p.id))
         ],
@@ -517,6 +520,7 @@ class PasosView(APIView):
         hours = serializers.DecimalField(max_digits=9, decimal_places=2, min_value=Decimal("0"))
         after = serializers.IntegerField(required=False, allow_null=True, min_value=0)
         name = serializers.CharField(required=False, allow_blank=True, max_length=120)
+        rework = serializers.BooleanField(required=False, default=False)
 
     @extend_schema(operation_id="produccion_agregar_paso", tags=["produccion"], request=Entrada, responses={201: OpenApiTypes.OBJECT})
     def post(self, request, pk):
@@ -526,7 +530,7 @@ class PasosView(APIView):
         d = entrada.validated_data
         return accion(
             request, vestido,
-            lambda: agregar_paso(vestido, d["operationId"], d["hours"], d.get("after"), d.get("name", ""), request.user),
+            lambda: agregar_paso(vestido, d["operationId"], d["hours"], d.get("after"), d.get("name", ""), request.user, d.get("rework", False)),
             lambda paso: f"Proceso «{paso.nombre}» agregado a la cola.",
             status.HTTP_201_CREATED,
         )

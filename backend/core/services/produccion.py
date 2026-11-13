@@ -512,7 +512,7 @@ def _plantilla_para(vestido, operacion):
 
 
 @transaction.atomic
-def agregar_paso(vestido, operacion_id, horas, despues_de=None, nombre="", usuario=None):
+def agregar_paso(vestido, operacion_id, horas, despues_de=None, nombre="", usuario=None, retrabajo=False):
     """
     Agrega un proceso a la cola del vestido (p. ej. una prueba extra).
     Se inserta después del índice indicado (por defecto, después del
@@ -549,6 +549,7 @@ def agregar_paso(vestido, operacion_id, horas, despues_de=None, nombre="", usuar
         operacion=operacion,
         nombre=(nombre or operacion.nombre).strip(),
         es_adicional=True,
+        es_retrabajo=bool(retrabajo),
         tipo_tiempo=PlantillaOperacion.TipoTiempo.TRABAJO,
         area=operacion.area_responsable,
         horas_estimadas=horas,
@@ -601,52 +602,18 @@ def siguiente_numero_pago(contrato):
     return next(n for n in range(1, 100) if n not in usados)
 
 
-@transaction.atomic
 def registrar_pago(
     vestido, importe, usuario=None, metodo=None, fecha=None, referencia="",
     concepto="", numero=None, observaciones="",
 ):
-    """
-    Pago recibido en el taller. `numero` (1, 2, 3…) es el número de pago
-    del contrato: el mismo que ve el área comercial ("Segundo pago").
-    """
-    importe = Decimal(importe).quantize(Decimal("0.01"))
-    if importe <= 0:
-        raise ValidationError("El monto debe ser mayor que cero.")
-    contrato = Contrato.objects.select_for_update().get(pk=vestido.contrato_id)
-    saldo = contrato.saldo_pendiente
-    if importe > saldo:
-        raise ValidationError(f"El pago supera el saldo pendiente del contrato (S/ {saldo}).")
-    if numero:
-        if Pago.objects.filter(contrato=contrato, orden_adelanto=numero).exists():
-            raise ValidationError(
-                f"El {ORDINALES_PAGO.get(numero, f'pago {numero}').lower()} ya está registrado en este contrato."
-            )
-    nombre = (concepto or "").strip() or (ORDINALES_PAGO.get(numero, f"Pago {numero}") if numero else "Pago")
-    pago = Pago.objects.create(
-        contrato=contrato,
-        vestido=vestido,
-        importe=importe,
-        fecha=fecha or timezone.localdate(),
-        metodo=metodo or Pago.Metodo.EFECTIVO,
-        referencia=referencia or "",
-        concepto=nombre,
-        observaciones=observaciones or "",
-        orden_adelanto=numero or None,
-        confirmado=True,
-        registrado_por=usuario,
-    )
+    """Pago recibido en el taller (mismo registro que ve Comercial)."""
+    from core.services.pagos import registrar_abono
 
-    from core.services.notificaciones import ROL_COMERCIAL, ROL_GERENCIA, cliente_de, notificar, usuarios_con_rol
-
-    notificar(
-        usuarios_con_rol(ROL_COMERCIAL, ROL_GERENCIA),
-        "PAGO",
-        f"Pago registrado en taller · {contrato.numero}",
-        f"{nombre}: S/ {importe} de {cliente_de(contrato)} ({vestido.codigo}). Saldo: S/ {contrato.saldo_pendiente}.",
-        vestido=vestido,
+    return registrar_abono(
+        vestido.contrato, importe, usuario, metodo, fecha, referencia,
+        numero=numero, descripcion=concepto, observaciones=observaciones,
+        vestido=vestido, origen=Pago.Origen.TALLER,
     )
-    return pago
 
 
 @transaction.atomic

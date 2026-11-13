@@ -134,6 +134,8 @@ def ser_gasto(g, hoy=None):
         "fixedMonth": g.mes_fijo,
         "notes": g.observaciones,
         "by": nombre_usuario(g.registrado_por),
+        "area": g.area,
+        "areaLabel": {"TIENDA": "Comercial", "TALLER": "Taller"}.get(g.area, "Gerencia"),
     }
 
 
@@ -238,7 +240,7 @@ class FinanzasResumenView(APIView):
         gastos_mes = total_gastos + pendiente_mes
         utilidad = total_ingresos - total_gastos
         utilidad_estimada = total_ingresos - gastos_mes
-        margen = float(utilidad_estimada / total_ingresos) if total_ingresos else None
+        margen = _margen01(utilidad_estimada, total_ingresos)
 
         meta, personalizada = config.meta_de(mes)
         dias_mes = (sig - mes).days
@@ -376,6 +378,8 @@ class GastosView(APIView):
             qs = qs.filter(estado=p["estado"])
         if p.get("categoria"):
             qs = qs.filter(categoria_id=p["categoria"])
+        if p.get("area") in ("TIENDA", "TALLER", "GERENCIA"):
+            qs = qs.filter(area=p["area"])
         if q := (p.get("q") or "").strip():
             qs = qs.filter(Q(concepto__icontains=q) | Q(proveedor__icontains=q) | Q(comprobante__icontains=q))
         hoy = timezone.localdate()
@@ -586,6 +590,7 @@ def ser_config(cfg):
         "businessName": cfg.nombre_negocio,
         "monthlyGoal": f(cfg.meta_mensual),
         "targetMargin": f(cfg.margen_objetivo),
+        "taxRate": f(cfg.tasa_impuesto),
         "customGoals": metas,
         "updatedAt": cfg.actualizado_en,
     }
@@ -608,6 +613,11 @@ class ConfiguracionView(APIView):
                 if m > 100:
                     raise ValueError("El margen no puede ser mayor que 100%.")
                 cfg.margen_objetivo = m
+            if "taxRate" in request.data:
+                t = decimal(request.data["taxRate"], "el impuesto")
+                if t > 100:
+                    raise ValueError("El impuesto no puede ser mayor que 100%.")
+                cfg.tasa_impuesto = t
             if "businessName" in request.data:
                 cfg.nombre_negocio = (request.data["businessName"] or "Fiancée").strip()[:120]
         except ValueError as exc:
@@ -812,7 +822,7 @@ class IndicadoresView(APIView):
                 "deliveredOnTime": sum(1 for t in ent if t["a_tiempo"]),
                 "deliveredLate": sum(1 for t in ent if not t["a_tiempo"]),
                 "income": f(i), "expense": f(g), "profit": f(i - g),
-                "margin": round(float((i - g) / i), 3) if i else None, "goal": f(meta),
+                "margin": _margen01(i - g, i), "goal": f(meta),
                 "goalReached": bool(meta and i >= meta),
             })
             m = s
@@ -917,7 +927,7 @@ class IndicadoresView(APIView):
                 "income": f(ingresos_total),
                 "expense": f(gastos_total),
                 "profit": f(ingresos_total - gastos_total),
-                "margin": round(float((ingresos_total - gastos_total) / ingresos_total), 3) if ingresos_total else None,
+                "margin": _margen01(ingresos_total - gastos_total, ingresos_total),
                 "targetMargin": f(cfg.margen_objetivo),
                 "goalsReached": sum(1 for x in serie if x["goalReached"]),
             },
@@ -932,3 +942,9 @@ class IndicadoresView(APIView):
             "hoursByProcess": horas_por_proceso,
             "series": serie,
         })
+
+
+def _margen01(utilidad, ingresos):
+    """Margen como fracción entre −1 y 1 (con pérdida se divide entre los gastos)."""
+    base = max(ingresos, ingresos - utilidad)
+    return round(float(utilidad / base), 3) if base else None

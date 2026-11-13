@@ -90,10 +90,18 @@ class VestidoContratoSerializer(serializers.ModelSerializer):
             "horas_sin_asignar",
             "procesos",
             "observaciones",
+            "ficha_tecnica",
+            "archivos",
         ]
         read_only_fields = fields
 
     procesos = serializers.SerializerMethodField()
+    archivos = serializers.SerializerMethodField()
+
+    def get_archivos(self, obj):
+        from core.operaciones_views import serializar_archivo
+
+        return [serializar_archivo(a, self.context.get("request")) for a in obj.archivos.all()]
 
     def get_procesos(self, obj):
         if not obj.ruta_id:
@@ -163,6 +171,7 @@ class PagoSerializer(serializers.ModelSerializer):
         fields = [
             "id", "orden_adelanto", "concepto", "importe", "fecha",
             "metodo", "referencia", "observaciones", "confirmado", "vestido", "vestido_codigo",
+            "codigo", "origen", "creado_en",
         ]
         read_only_fields = fields
 
@@ -367,6 +376,7 @@ class ItemContratoSerializer(serializers.Serializer):
         max_digits=12, decimal_places=2, min_value=CERO, default=CERO
     )
     observaciones = serializers.CharField(required=False, allow_blank=True)
+    ficha_tecnica = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, attrs):
         tipo = attrs.get("tipo_vestido")

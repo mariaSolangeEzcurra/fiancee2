@@ -275,6 +275,8 @@ def _aplicar_items(contrato, items, permitir_borrar):
         vestido.precio = item.get("precio") or CERO
         vestido.precio_otros = item.get("precio_otros") or CERO
         vestido.observaciones = item.get("observaciones", vestido.observaciones) or ""
+        if "ficha_tecnica" in item:
+            vestido.ficha_tecnica = item.get("ficha_tecnica") or ""
         if cambia_produccion and not ruta:
             vestido.fecha_fin_estimada = None
             vestido.horas_sin_asignar = CERO
@@ -370,7 +372,7 @@ def _aplicar_adelantos(contrato, adelantos, usuario):
             continue
 
         if pago is None:
-            pago = Pago(contrato=contrato, orden_adelanto=orden, registrado_por=usuario)
+            pago = Pago(contrato=contrato, orden_adelanto=orden, registrado_por=usuario, origen=Pago.origen_de(usuario))
 
         pago.importe = importe
         pago.fecha = datos.get("fecha") or pago.fecha or timezone.localdate()
@@ -482,18 +484,20 @@ def crear_contrato(
 
     planificacion = planificar_vestidos(contrato, a_planificar)
 
-    en_taller = contrato.vestidos.filter(ruta__isnull=False).count()
-    if en_taller:
-        from core.services.notificaciones import ROL_JEFA, notificar, usuarios_con_rol
+    # Todo contrato nuevo se avisa a la jefa de taller y a gerencia.
+    from core.services.notificaciones import ROL_GERENCIA, ROL_JEFA, notificar, usuarios_con_rol
 
-        notificar(
-            usuarios_con_rol(ROL_JEFA),
-            "CONTRATO",
-            f"Nuevo contrato · {contrato.numero}",
-            f"{cliente.nombre}: {en_taller} vestido(s) para el taller. "
-            f"Entrega el {contrato.fecha_entrega:%d/%m/%Y}.",
-            contrato=contrato,
-        )
+    en_taller = contrato.vestidos.filter(ruta__isnull=False).count()
+    total_vestidos = contrato.vestidos.count()
+    detalle_taller = f"{en_taller} vestido(s) para el taller" if en_taller else "sin trabajo para el taller"
+    notificar(
+        usuarios_con_rol(ROL_JEFA, ROL_GERENCIA),
+        "CONTRATO",
+        f"Nuevo contrato · {contrato.numero}",
+        f"{cliente.nombre}: {total_vestidos} vestido(s), {detalle_taller}. "
+        f"Total S/ {contrato.precio_total:,.2f}. Entrega el {contrato.fecha_entrega:%d/%m/%Y}.",
+        contrato=contrato,
+    )
 
     return contrato, {
         "cliente_creado": cliente_creado,

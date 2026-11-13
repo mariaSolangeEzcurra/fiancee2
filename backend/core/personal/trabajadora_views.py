@@ -1010,13 +1010,12 @@ class VestidosDisponiblesView(APIView):
             "numero",
         )
 
-        # Excluir vestidos que ya tengan una sesión abierta.
-        vestidos = vestidos.exclude(
-            sesiones_trabajo__estado__in=[
-                SesionVestido.Estado.EN_CURSO,
-                SesionVestido.Estado.PAUSADA,
-            ]
-        )
+        # Excluir vestidos que otra persona tenga abiertos (el suyo se queda
+        # para mostrar su proceso y su ficha en «Estás trabajando en»).
+        ocupados = SesionVestido.objects.filter(
+            estado__in=[SesionVestido.Estado.EN_CURSO, SesionVestido.Estado.PAUSADA]
+        ).exclude(trabajadora=trabajadora).values("vestido_id")
+        vestidos = vestidos.exclude(pk__in=ocupados)
 
         resultado = []
 
@@ -1026,14 +1025,25 @@ class VestidosDisponiblesView(APIView):
 
             asegurar_pasos(vestido)
             paso = paso_actual(vestido)
-            # La entrega la registra la jefa de taller y solo se puede
-            # trabajar en un proceso que la jefa ya inició.
-            if paso is None or paso.es_entrega or paso.estado != "EN_CURSO":
+            if paso is None or paso.es_entrega:
                 continue
             asignada = paso.trabajadoras.filter(pk=trabajadora.pk).exists()
-            # Solo los procesos que ella sabe hacer (o si la asignaron).
-            if not asignada and not puede_hacer(trabajadora, paso, elegibles):
-                continue
+            # ¿La asignaron a un proceso que viene después?
+            paso_futuro = None
+            if not asignada:
+                paso_futuro = (
+                    vestido.pasos.filter(orden__gt=paso.orden, trabajadoras=trabajadora)
+                    .exclude(estado="COMPLETADO").order_by("orden").first()
+                )
+            puede_empezar = paso.estado == "EN_CURSO" and (asignada or puede_hacer(trabajadora, paso, elegibles))
+            motivo = ""
+            if not puede_empezar:
+                if asignada:
+                    motivo = f"Te asignaron «{paso.nombre}». Podrás empezar cuando la jefa inicie el proceso."
+                elif paso_futuro is not None:
+                    motivo = f"Te toca «{paso_futuro.nombre}» cuando terminen «{paso.nombre}»."
+                else:
+                    continue  # no es para ella
 
             resultado.append({
                 "id": vestido.id,
@@ -1061,14 +1071,18 @@ class VestidosDisponiblesView(APIView):
                     paso.plantilla is not None
                     and paso.plantilla.operacion_id in mis_operaciones
                 ),
-                "asignada_a_mi": asignada,
+                "asignada_a_mi": asignada or paso_futuro is not None,
+                "puede_empezar": puede_empezar,
+                "motivo": motivo,
+                "archivos": vestido.archivos.count(),
+                "tiene_ficha": bool(vestido.ficha_tecnica) or vestido.archivos.exists(),
                 "proceso_iniciado_en": paso.iniciado_en,
                 # Observaciones, fotos y cambios pedidos (visibles para todas).
                 "observaciones": notas_para_taller(vestido, request),
             })
 
         # Primero lo asignado a ella y lo de su área.
-        resultado.sort(key=lambda v: (not v["asignada_a_mi"], not v["es_de_mi_area"]))
+        resultado.sort(key=lambda v: (not v["puede_empezar"], not v["asignada_a_mi"], not v["es_de_mi_area"]))
         return Response(resultado)
 
 
@@ -1107,12 +1121,18 @@ class IniciarSesionVestidoView(APIView):
             ],
         ).first()
 
-        if sesion_abierta:
+        cambiar = str(request.data.get("cambiar", "")).lower() in ("1", "true", "si", "sí")
+        if sesion_abierta and str(sesion_abierta.vestido_id) == str(vestido_id):
+            return Response(
+                {"detail": "Ya estás trabajando en este vestido.", "sesion": serializar_sesion_vestido(sesion_abierta)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if sesion_abierta and not cambiar:
             return Response(
                 {
                     "detail": (
-                        "Debes finalizar o resolver tu sesión actual "
-                        "antes de iniciar otro vestido."
+                        "Tienes otro vestido abierto. Termínalo o elige «Cambiar a este» "
+                        "para guardar tu avance y pasar a otro."
                     ),
                     "sesion": serializar_sesion_vestido(sesion_abierta),
                 },
@@ -1178,6 +1198,10 @@ class IniciarSesionVestidoView(APIView):
                 {"detail": "Este vestido está siendo trabajado por otra persona."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if sesion_abierta:
+            # Se guarda el avance del vestido anterior antes de pasar al nuevo.
+            cerrar_sesion_vestido(sesion_abierta, f"Pasó a trabajar {vestido.codigo}.")
 
         sesion = SesionVestido.objects.create(
             trabajadora=trabajadora,
@@ -1284,6 +1308,20 @@ class ReanudarSesionVestidoView(APIView):
             "detail": "Sesión reanudada correctamente.",
             "sesion": serializar_sesion_vestido(sesion),
         })
+
+
+def cerrar_sesion_vestido(sesion, nota=""):
+    """Cierra la sesión (y su pausa abierta) guardando las horas trabajadas."""
+    pausa_abierta = PausaSesionVestido.objects.filter(sesion=sesion, fin__isnull=True).first()
+    if pausa_abierta:
+        pausa_abierta.fin = timezone.now()
+        pausa_abierta.save(update_fields=["fin"])
+    if nota:
+        sesion.observaciones = f"{sesion.observaciones}\n{nota}" if sesion.observaciones else nota
+    sesion.fin = timezone.now()
+    sesion.estado = SesionVestido.Estado.FINALIZADA
+    sesion.save(update_fields=["fin", "estado", "observaciones"])
+    return sesion
 
 
 class FinalizarSesionVestidoView(APIView):

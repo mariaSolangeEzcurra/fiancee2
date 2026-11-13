@@ -93,7 +93,7 @@ class ImportacionTests(TestCase):
 
     def test_personal_y_gastos(self):
         archivo = libro(
-            Personal=[["Rosa Nueva", "Bordado", "", "", 8, 8, 8, 8, 8, 4, 0, ""]],
+            Personal=[["Rosa Nueva", "Bordado", "", "", 8, 8, 8, 8, 8, 4, 0, "1,300", "01/03/2025", ""]],
             Gastos=[[date(2026, 11, 3), "Encaje", "Telas y encajes", "1,250.50", "", "", "", "Por pagar", "30/11/2026", ""]],
         )
         r = procesar(archivo, self.ti, guardar=True)
@@ -101,6 +101,8 @@ class ImportacionTests(TestCase):
         t = Trabajadora.objects.get(nombre="Rosa Nueva")
         self.assertEqual(t.area, "BORDADO")
         self.assertEqual(t.horarios.get(dia_semana=5).horas_disponibles, 4)
+        self.assertEqual(t.sueldo_mensual, 1300)
+        self.assertEqual(str(t.fecha_ingreso), "2025-03-01")
         g = Gasto.objects.get(concepto="Encaje")
         self.assertEqual(str(g.importe), "1250.50")
         self.assertEqual(g.estado, "PENDIENTE")
@@ -121,3 +123,74 @@ class ImportacionTests(TestCase):
         self.assertEqual(ImportacionDatos.objects.count(), 1)
         resp = api.post("/api/core/ti/importar/", {"archivo": SimpleUploadedFile("x.csv", b"a,b")}, format="multipart")
         self.assertEqual(resp.status_code, 400)
+
+
+class AnalisisGerenciaTests(TestCase):
+    def test_rentabilidad_y_tiempos_responden(self):
+        ger = get_user_model().objects.create_user("ger2", password="x", rol="gerencia")
+        api = APIClient()
+        api.force_authenticate(ger)
+        r = api.get("/api/core/gerencia/indicadores/rentabilidad/?meses=3")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["verdict"]["code"], "SIN_DATOS")
+        # Sueldos y gastos fijos entran al costo aunque no estén pagados.
+        from core.models import CostoOperativo, Trabajadora
+        Trabajadora.objects.create(nombre="Ana", area="CONFECCION", sueldo_mensual=1200)
+        cat = CategoriaFinanciera.objects.get_or_create(nombre="Alquiler del local", defaults={"tipo": "EGRESO"})[0]
+        CostoOperativo.objects.create(nombre="Alquiler", categoria=cat, importe=2000, fecha_inicio="2020-01-01")
+        d = api.get("/api/core/gerencia/indicadores/rentabilidad/?meses=1").json()
+        self.assertEqual(d["totals"]["salaries"], 1200)
+        self.assertEqual(d["totals"]["fixed"], 2000)
+        self.assertEqual(d["verdict"]["code"], "NO")
+        r = api.get("/api/core/gerencia/indicadores/personal/?meses=3")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["workers"], [])
+        api.force_authenticate(get_user_model().objects.create_user("com", password="x", rol="comercial"))
+        self.assertEqual(api.get("/api/core/gerencia/indicadores/rentabilidad/").status_code, 403)
+
+
+class DashboardGerencialTests(TestCase):
+    def test_endpoints(self):
+        ger = get_user_model().objects.create_user("ger3", password="x", rol="gerencia")
+        api = APIClient()
+        api.force_authenticate(ger)
+        r = api.get("/api/core/gerencia/dashboard/?meses=3")
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()
+        for k in ("eficiencia", "desviacion", "costoMoVestido", "utilidadBruta", "margenBruto", "cumplimiento", "capacidadUtilizada", "retrabajo"):
+            self.assertIn(k, d["period"])
+        self.assertEqual(len(d["monthly"]), 3)
+        self.assertEqual(api.get("/api/core/gerencia/dashboard/capacidad/").status_code, 200)
+        self.assertEqual(api.get("/api/core/gerencia/dashboard/finanzas/").status_code, 200)
+        r = api.get("/api/core/gerencia/dashboard/reporte/?meses=3")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Comparación mensual", load_workbook(io.BytesIO(r.content)).sheetnames)
+        api.force_authenticate(get_user_model().objects.create_user("jt", password="x", rol="jefa_taller"))
+        self.assertEqual(api.get("/api/core/gerencia/dashboard/").status_code, 403)
+
+
+class EstadoResultadosTests(TestCase):
+    def test_estructura_y_impuesto(self):
+        from datetime import date as d
+        from core.models import ConfiguracionNegocio, CostoOperativo, Gasto, Trabajadora
+        ger = get_user_model().objects.create_user("ger4", password="x", rol="gerencia")
+        cfg = ConfiguracionNegocio.obtener()
+        cfg.tasa_impuesto = 10
+        cfg.save()
+        Trabajadora.objects.create(nombre="Ana", area="CONFECCION", sueldo_mensual=1000)
+        cat_tela = CategoriaFinanciera.objects.get_or_create(nombre="Telas y encajes", defaults={"tipo": "EGRESO"})[0]
+        cat_alq = CategoriaFinanciera.objects.get_or_create(nombre="Alquiler del local", defaults={"tipo": "EGRESO"})[0]
+        CostoOperativo.objects.create(nombre="Alquiler", categoria=cat_alq, importe=500, fecha_inicio="2020-01-01")
+        hoy = d.today()
+        Gasto.objects.create(fecha=hoy, concepto="Tela", categoria=cat_tela, importe=300, metodo="EFECTIVO", estado="PAGADO")
+        api = APIClient()
+        api.force_authenticate(ger)
+        r = api.get("/api/core/gerencia/estado-resultados/?meses=1")
+        self.assertEqual(r.status_code, 200, r.content)
+        lin = {l["key"]: l for l in r.json()["lines"]}
+        self.assertEqual(lin["costoVentas"]["accounting"], 1300)   # 1000 sueldo + 300 tela
+        self.assertEqual(lin["gastosOperativos"]["accounting"], 500)
+        self.assertEqual(lin["operativa"]["accounting"], -1800)
+        self.assertEqual(lin["impuestos"]["accounting"], 0)          # sin utilidad, sin impuesto
+        self.assertEqual(lin["neta"]["accounting"], -1800)
+        self.assertEqual(lin["materiales"]["cash"] if "materiales" in lin else lin["mat:Telas y encajes"]["cash"], 300)
